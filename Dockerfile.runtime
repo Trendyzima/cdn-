@@ -1,0 +1,11 @@
+FROM scratch
+
+COPY container/testagram-edge /testagram-edge
+COPY container/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --chown=65532:65532 container/cache/.keep /cache/.keep
+
+USER 65532:65532
+ENV LISTEN_ADDR=:8080
+ENV CACHE_DIR=/cache
+EXPOSE 8080
+ENTRYPOINT ["/testagram-edge"]
