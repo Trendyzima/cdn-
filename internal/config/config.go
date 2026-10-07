@@ -15,6 +15,7 @@ type Config struct {
     CacheTTL time.Duration
     MaxCacheBytes int64
     HotCacheBytes int64
+    HotCacheMaxObjectBytes int64
     SegmentTTL time.Duration
     ManifestTTL time.Duration
     StaleIfError time.Duration
@@ -43,7 +44,8 @@ func Load() Config {
         CacheDir: env("CACHE_DIR","./cache"),
         CacheTTL: duration("CACHE_TTL",30*time.Second),
         MaxCacheBytes: integer("MAX_CACHE_BYTES",16<<30),
-        HotCacheBytes: integer("HOT_CACHE_BYTES",512<<20),
+        HotCacheBytes: integer("HOT_CACHE_BYTES",1<<30),
+        HotCacheMaxObjectBytes: integer("HOT_CACHE_MAX_OBJECT_BYTES",8<<20),
         SegmentTTL: duration("SEGMENT_TTL",20*time.Second),
         ManifestTTL: duration("MANIFEST_TTL",2*time.Second),
         StaleIfError: duration("STALE_IF_ERROR",30*time.Second),
