@@ -72,7 +72,7 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string) ([]byte,string,error) {
   s.mu.Lock()
   if f,ok := s.tvFetching[key]; ok { s.mu.Unlock(); <-f.done; return f.data,f.contentType,f.err }
-  if e,err := s.cache.Get(key); err == nil { s.mu.Unlock(); data,readErr := os.ReadFile(e.Path); return data,"application/octet-stream",readErr }
+  if e,err := s.cache.Get(key); err == nil { s.mu.Unlock(); data,readErr := os.ReadFile(e.Path); ct := "application/octet-stream"; if strings.HasSuffix(strings.ToLower(rel),".m3u8") { ct="application/vnd.apple.mpegurl; charset=utf-8" }; return data,ct,readErr }
   f := &tvFetch{done:make(chan struct{})}; s.tvFetching[key]=f; s.mu.Unlock()
 
   s.inflight.Add(1); s.upstream.Add(1)
