@@ -1,12 +1,19 @@
 name: CI
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+
 permissions:
   contents: read
   packages: write
+
+concurrency:
+  group: cdn-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,8 +23,15 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-      - run: go test ./...
-      - run: go vet ./...
+      - name: Unit and integration tests
+        run: go test ./...
+      - name: Race detector
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build binary
+        run: go build -trimpath -o /tmp/testagram-edge ./cmd/edge
+
   image:
     needs: test
     if: github.event_name != 'pull_request'
@@ -34,4 +48,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/testagram-edge:latest
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/testagram-edge:latest
+            ghcr.io/${{ github.repository_owner }}/testagram-edge:${{ github.sha }}
