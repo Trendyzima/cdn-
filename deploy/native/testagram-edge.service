@@ -1,0 +1,27 @@
+[Unit]
+Description=Testagram Edge CDN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=testagram-edge
+Group=testagram-edge
+WorkingDirectory=/opt/testagram-edge
+EnvironmentFile=/etc/testagram-edge/edge.env
+ExecStart=/opt/testagram-edge/testagram-edge
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+LimitNPROC=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/testagram-edge
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
