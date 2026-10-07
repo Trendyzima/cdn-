@@ -38,7 +38,7 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   cacheKey := "tv/"+scope+"/"+hashString(src)+"/"+strings.Join(parts[2:],"/")
   if e, err := s.cache.Get(cacheKey); err == nil {
     s.hits.Add(1); w.Header().Set("X-Cache","HIT"); w.Header().Set("Cache-Status","testagram; hit")
-    setType(w,rel); w.Header().Set("Cache-Control",cacheControl(rel)); w.Header().Set("ETag",etagFile(e))
+    setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(tvDeliveryDirectives(r.URL.Query(),strings.HasSuffix(strings.ToLower(target.Path),".m3u8")))>0)); w.Header().Set("ETag",etagFile(e)); if strings.HasSuffix(strings.ToLower(rel),".m3u8") { w.Header().Set("Vary","Accept-Encoding") }
     s.serveEntry(w,r,e); return
   }
 
@@ -54,7 +54,7 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   }
 
   w.Header().Set("X-Cache","MISS"); w.Header().Set("Cache-Status","testagram; fwd=uri-miss")
-  w.Header().Set("Content-Type",contentType); w.Header().Set("Cache-Control",cacheControl(rel)); w.Header().Set("ETag","\""+hash(data)+"\"")
+  w.Header().Set("Content-Type",contentType); w.Header().Set("Cache-Control",tvCacheControl(rel,len(requestDirectives)>0)); w.Header().Set("ETag","\""+hash(data)+"\"")
   s.served.Add(uint64(len(data)))
   if r.Method == http.MethodHead { w.WriteHeader(200); return }
   w.WriteHeader(200); _,_ = w.Write(data)
