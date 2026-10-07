@@ -35,20 +35,24 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   target, err := url.Parse(src)
   if err != nil || target.Scheme != "https" || isPrivateHost(target.Hostname()) { http.Error(w,"invalid stream source",400); return }
   if !s.authorizedTV(scope,src,token) { s.rejected.Add(1); http.Error(w,"unauthorized",401); return }
-  directives := tvDeliveryDirectives(r.URL.Query(), strings.HasSuffix(strings.ToLower(target.Path),".m3u8"))
+  playlist := strings.HasSuffix(strings.ToLower(target.Path),".m3u8")
+  directives := tvDeliveryDirectives(r.URL.Query(), playlist)
+  blockingReload := playlist && (directives.Get("_HLS_msn") != "" || directives.Get("_HLS_part") != "")
   fetchTarget := target
   if len(directives) > 0 { fetchTarget = cloneURLWithQuery(target,directives) }
 
   cacheKey := "tv/"+scope+"/"+hashString(fetchTarget.String())+"/"+strings.Join(parts[2:],"/")
+  if !blockingReload {
   if e, err := s.cache.Get(cacheKey); err == nil {
     s.hits.Add(1); w.Header().Set("X-Cache","HIT"); w.Header().Set("Cache-Status","testagram; hit")
     setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(tvDeliveryDirectives(r.URL.Query(),strings.HasSuffix(strings.ToLower(target.Path),".m3u8")))>0)); w.Header().Set("ETag",etagFile(e)); w.Header().Set("Age",age(e)); if strings.HasSuffix(strings.ToLower(rel),".m3u8") { w.Header().Set("Vary","Accept-Encoding") }
     s.serveEntry(w,r,e); return
   }
+  }
 
   stale, staleErr := s.cache.GetStale(cacheKey)
   s.misses.Add(1)
-  data, contentType, fetchErr := s.fetchTVCoalesced(cacheKey,fetchTarget,scope,rel)
+  data, contentType, fetchErr := s.fetchTVCoalesced(cacheKey,fetchTarget,scope,rel,blockingReload)
   if fetchErr != nil {
     if staleErr == nil {
       s.staleHits.Add(1); w.Header().Set("X-Cache","STALE"); w.Header().Set("Cache-Status","testagram; stale-if-error")
@@ -69,9 +73,10 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   w.WriteHeader(200); _,_ = w.Write(data)
 }
 
-func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string) ([]byte,string,error) {
+func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string, blockingReload bool) ([]byte,string,error) {
   s.mu.Lock()
   if f,ok := s.tvFetching[key]; ok { s.mu.Unlock(); <-f.done; return f.data,f.contentType,f.err }
+  if !blockingReload {
   if e,err := s.cache.Get(key); err == nil { s.mu.Unlock(); data,readErr := os.ReadFile(e.Path); ct := "application/octet-stream"; if strings.HasSuffix(strings.ToLower(rel),".m3u8") { ct="application/vnd.apple.mpegurl; charset=utf-8" }; return data,ct,readErr }
   f := &tvFetch{done:make(chan struct{})}; s.tvFetching[key]=f; s.mu.Unlock()
 
@@ -81,7 +86,7 @@ func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string
     f.data = s.rewriteTVPlaylist(scope,target,f.data)
     f.contentType = "application/vnd.apple.mpegurl; charset=utf-8"
   }
-  if f.err == nil {
+  if f.err == nil && !blockingReload {
     ttl := ttlForTV(s.cfg,rel)
     if _,e := s.cache.Put(key,f.data,ttl,s.cfg.StaleIfError); e != nil { f.err=e }
   }
