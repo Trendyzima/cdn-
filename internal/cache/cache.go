@@ -18,6 +18,7 @@ type Entry struct {
     Path string
     Size int64
     ExpiresAt time.Time
+    StaleUntil time.Time
 }
 type Cache struct {
     mu sync.Mutex
@@ -34,16 +35,44 @@ func New(root string, maxBytes int64) (*Cache,error) {
     if err:=os.MkdirAll(root,0750);err!=nil{return nil,err}
     return &Cache{root:root,maxBytes:maxBytes,items:map[string]*list.Element{},lru:list.New()},nil
 }
+
 func(c *Cache)Get(key string)(Entry,error){
-    c.mu.Lock();defer c.mu.Unlock()
-    el,ok:=c.items[key];if !ok{return Entry{},ErrMiss}
+    c.mu.Lock()
+    el,ok:=c.items[key]
+    if !ok { c.mu.Unlock(); return Entry{},ErrMiss }
     e:=el.Value.(item).e
-    if !time.Now().Before(e.ExpiresAt){c.removeLocked(el);return Entry{},ErrMiss}
-    if _,err:=os.Stat(e.Path);err!=nil{c.removeLocked(el);return Entry{},ErrMiss}
-    c.lru.MoveToFront(el);return e,nil
+    now:=time.Now()
+    if !now.Before(e.ExpiresAt) {
+        if !now.Before(e.StaleUntil) { c.removeLocked(el) }
+        c.mu.Unlock()
+        return Entry{},ErrMiss
+    }
+    c.lru.MoveToFront(el)
+    c.mu.Unlock()
+    if _,err:=os.Stat(e.Path);err!=nil { c.Delete(key); return Entry{},ErrMiss }
+    return e,nil
 }
-func(c *Cache)Put(key string,data []byte,ttl time.Duration)(Entry,error){
+
+func(c *Cache)GetStale(key string)(Entry,error){
+    c.mu.Lock()
+    el,ok:=c.items[key]
+    if !ok { c.mu.Unlock(); return Entry{},ErrMiss }
+    e:=el.Value.(item).e
+    now:=time.Now()
+    if now.Before(e.ExpiresAt)||!now.Before(e.StaleUntil) { 
+        if !now.Before(e.StaleUntil) { c.removeLocked(el) }
+        c.mu.Unlock()
+        return Entry{},ErrMiss
+    }
+    c.lru.MoveToFront(el)
+    c.mu.Unlock()
+    if _,err:=os.Stat(e.Path);err!=nil { c.Delete(key); return Entry{},ErrMiss }
+    return e,nil
+}
+
+func(c *Cache)Put(key string,data []byte,ttl,staleFor time.Duration)(Entry,error){
     if ttl<=0{return Entry{},errors.New("cache ttl must be positive")}
+    if staleFor<0{return Entry{},errors.New("stale window cannot be negative")}
     if int64(len(data))>c.maxBytes{return Entry{},errors.New("object exceeds cache capacity")}
     name:=filepath.Join(c.root,safeName(key))
     tmp,err:=os.CreateTemp(c.root,".cache-*");if err!=nil{return Entry{},err}
@@ -54,7 +83,8 @@ func(c *Cache)Put(key string,data []byte,ttl time.Duration)(Entry,error){
     c.mu.Lock();defer c.mu.Unlock()
     if old,ok:=c.items[key];ok{c.removeLocked(old)}
     if err=os.Rename(tmpName,name);err!=nil{return Entry{},err}
-    e:=Entry{Key:key,Path:name,Size:int64(len(data)),ExpiresAt:time.Now().Add(ttl)}
+    now:=time.Now()
+    e:=Entry{Key:key,Path:name,Size:int64(len(data)),ExpiresAt:now.Add(ttl),StaleUntil:now.Add(ttl+staleFor)}
     c.items[key]=c.lru.PushFront(item{e:e});c.bytes+=e.Size
     for c.bytes>c.maxBytes{c.removeLocked(c.lru.Back())}
     return e,nil
