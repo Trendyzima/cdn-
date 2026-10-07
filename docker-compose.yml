@@ -1,0 +1,18 @@
+services:
+  edge:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      LISTEN_ADDR: ":8080"
+      ORIGIN_URL: "http://host.docker.internal:9000"
+      CACHE_DIR: "/app/cache"
+      SEGMENT_TTL: "20s"
+      MANIFEST_TTL: "2s"
+      MAX_CACHE_BYTES: "2147483648"
+      MAX_SEGMENT_BYTES: "16777216"
+      NODE_ID: "local-edge"
+    volumes:
+      - edge-cache:/app/cache
+volumes:
+  edge-cache:
