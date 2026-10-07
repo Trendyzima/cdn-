@@ -54,13 +54,15 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Cache", "HIT")
 		w.Header().Set("Cache-Status", "testagram; hit")
 		setType(w, rel)
+		w.Header().Set("Cache-Control", cacheControl(rel))
+		w.Header().Set("ETag", etagFile(e))
 		s.serveEntry(w, r, e)
 		return
 	}
 
 	stale, staleErr := s.cache.GetStale(cacheKey)
 	s.misses.Add(1)
-	data, contentType, fetchErr := s.fetchTVSource(target)
+	data, contentType, fetchErr := s.fetchTVCoalesced(cacheKey, target, ttlForTV(s.cfg, rel))
 	if fetchErr != nil {
 		if staleErr == nil {
 			s.staleHits.Add(1)
@@ -78,10 +80,6 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
 		data = s.rewriteTVPlaylist(scope, target, data)
 		contentType = "application/vnd.apple.mpegurl; charset=utf-8"
 	}
-	ttl := s.cfg.SegmentTTL
-	if strings.HasSuffix(strings.ToLower(rel), ".m3u8") || strings.Contains(contentType, "mpegurl") {
-		ttl = s.cfg.ManifestTTL
-	}
 	if _, e := s.cache.Put(cacheKey, data, ttl, s.cfg.StaleIfError); e != nil {
 		http.Error(w, "cache write failed", http.StatusBadGateway)
 		return
@@ -91,10 +89,48 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Status", "testagram; fwd=uri-miss")
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", cacheControl(rel))
+	w.Header().Set("ETag", ` + "`"" + `" + ` + ` + `"` + ` + ` + ` + `hash(data)` + ` + ` + `""" + "`" + ` + `)
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write(data)
 	}
+}
+
+func ttlForTV(cfg config.Config, rel string) time.Duration {
+  if strings.HasSuffix(strings.ToLower(rel), ".m3u8") { return cfg.ManifestTTL }
+  return cfg.SegmentTTL
+}
+
+func (s *Server) fetchTVCoalesced(key string, target *url.URL, ttl time.Duration) ([]byte, string, error) {
+  s.mu.Lock()
+  if f, ok := s.tvFetching[key]; ok {
+    s.mu.Unlock()
+    <-f.done
+    return f.data, f.contentType, f.err
+  }
+  if e, err := s.cache.Get(key); err == nil {
+    s.mu.Unlock()
+    data, readErr := os.ReadFile(e.Path)
+    return data, "application/octet-stream", readErr
+  }
+  f := &tvFetch{done: make(chan struct{})}
+  s.tvFetching[key] = f
+  s.mu.Unlock()
+
+  s.inflight.Add(1)
+  s.upstream.Add(1)
+  f.data, f.contentType, f.err = s.fetchTVSource(target)
+  s.inflight.Add(^uint64(0))
+  if f.err == nil {
+    if _, e := s.cache.Put(key, f.data, ttl, s.cfg.StaleIfError); e != nil {
+      f.err = e
+    }
+  }
+  s.mu.Lock()
+  close(f.done)
+  delete(s.tvFetching, key)
+  s.mu.Unlock()
+  return f.data, f.contentType, f.err
 }
 
 func (s *Server) fetchTVSource(target *url.URL) ([]byte, string, error) {
@@ -104,7 +140,7 @@ func (s *Server) fetchTVSource(target *url.URL) ([]byte, string, error) {
 	}
 	req.Header.Set("User-Agent", "TestagramEdge/1.0")
 	req.Header.Set("Accept", "application/vnd.apple.mpegurl,application/x-mpegURL,video/*,audio/*,*/*")
-	resp, err := s.client.Do(req)
+	resp, err := s.tvClient.Do(req)
 	if err != nil {
 		return nil, "", err
 	}
