@@ -51,3 +51,11 @@ func TestTVRedirectRejectsPrivateTarget(t *testing.T) {
     t.Fatal("expected private/insecure TV redirect to be rejected")
   }
 }
+
+func TestTVBlockingReloadDirectives(t *testing.T) {
+ q:=url.Values{"_HLS_msn":[]string{"42"},"_HLS_part":[]string{"3"},"_HLS_skip":[]string{"YES"}}
+ d:=tvDeliveryDirectives(q,true)
+ if d.Get("_HLS_msn")!="42" || d.Get("_HLS_part")!="3" || d.Get("_HLS_skip")!="YES" { t.Fatalf("directives not preserved: %v",d) }
+ d=tvDeliveryDirectives(url.Values{"_HLS_part":[]string{"3"}},true)
+ if d.Get("_HLS_part")!="" { t.Fatal("part directive must not be sent without msn") }
+}
