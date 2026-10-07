@@ -27,7 +27,6 @@ type Config struct {
     MaxIdleConnsPerHost int
     MaxConnsPerHost int
     TVMaxRedirects int
-    LowLatencyManifestTTL time.Duration
     SegmentStaleFor time.Duration
 }
 
@@ -57,7 +56,6 @@ func Load() Config {
         MaxIdleConnsPerHost: int(integer("MAX_IDLE_CONNS_PER_HOST",1024)),
         MaxConnsPerHost: int(integer("MAX_CONNS_PER_HOST",0)),
         TVMaxRedirects: int(integer("TV_MAX_REDIRECTS",5)),
-        LowLatencyManifestTTL: duration("LOW_LATENCY_MANIFEST_TTL",250*time.Millisecond),
         SegmentStaleFor: duration("SEGMENT_STALE_FOR",2*time.Minute),
     }
 }
