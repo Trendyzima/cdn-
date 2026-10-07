@@ -28,6 +28,7 @@ type Config struct {
     MaxIdleConnsPerHost int
     MaxConnsPerHost int
     TVMaxRedirects int
+    TVOriginTimeout time.Duration
 }
 
 func Load() Config {
@@ -43,11 +44,11 @@ func Load() Config {
         CacheDir: env("CACHE_DIR","./cache"),
         CacheTTL: duration("CACHE_TTL",30*time.Second),
         MaxCacheBytes: integer("MAX_CACHE_BYTES",64<<30),
-        HotCacheBytes: integer("HOT_CACHE_BYTES",16<<30),
+        HotCacheBytes: integer("HOT_CACHE_BYTES",32<<30),
         SegmentTTL: duration("SEGMENT_TTL",30*time.Second),
         ManifestTTL: duration("MANIFEST_TTL",2*time.Second),
         StaleIfError: duration("STALE_IF_ERROR",60*time.Second),
-        MaxSegmentBytes: integer("MAX_SEGMENT_BYTES",16<<20),
+        MaxSegmentBytes: integer("MAX_SEGMENT_BYTES",32<<20),
         AllowedOrigins: split(os.Getenv("ALLOWED_ORIGINS")),
         NodeID: env("NODE_ID","local"),
         RateLimitPerMin: int(integer("RATE_LIMIT_PER_MIN",1200)),
@@ -57,6 +58,7 @@ func Load() Config {
         MaxIdleConnsPerHost: int(integer("MAX_IDLE_CONNS_PER_HOST",4096)),
         MaxConnsPerHost: int(integer("MAX_CONNS_PER_HOST",0)),
         TVMaxRedirects: int(integer("TV_MAX_REDIRECTS",5)),
+        TVOriginTimeout: duration("TV_ORIGIN_TIMEOUT",30*time.Second),
     }
 }
 func env(k,f string)string{if v:=os.Getenv(k);v!=""{return v};return f}
