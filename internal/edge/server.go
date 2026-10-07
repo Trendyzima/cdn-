@@ -138,8 +138,10 @@ func(s *Server)rateLimit(next http.Handler)http.Handler{
   if s.cfg.RateLimitPerMin<=0||s.cfg.RateLimitBurst<=0{next.ServeHTTP(w,r);return}
   ip,_,e:=net.SplitHostPort(r.RemoteAddr);if e!=nil{ip=r.RemoteAddr}
   now:=time.Now();rate:=float64(s.cfg.RateLimitPerMin)/60
-  if len(s.rates)>100000{s.rateMu.Unlock();next.ServeHTTP(w,r);return}
-  s.rateMu.Lock();b:=s.rates[ip];if b==nil{b=&bucket{tokens:float64(s.cfg.RateLimitBurst),last:now};s.rates[ip]=b}
+  s.rateMu.Lock()
+  if len(s.rates)>100000{for k,b:=range s.rates{if now.Sub(b.last)>time.Minute{delete(s.rates,k)}}}
+  if len(s.rates)>120000{s.rateMu.Unlock();s.rejected.Add(1);http.Error(w,"rate limiter overloaded",503);return}
+  b:=s.rates[ip];if b==nil{b=&bucket{tokens:float64(s.cfg.RateLimitBurst),last:now};s.rates[ip]=b}
   b.tokens+=now.Sub(b.last).Seconds()*rate;if b.tokens>float64(s.cfg.RateLimitBurst){b.tokens=float64(s.cfg.RateLimitBurst)}
   b.last=now;allowed:=b.tokens>=1;if allowed{b.tokens--};s.rateMu.Unlock()
   if !allowed{s.rejected.Add(1);w.Header().Set("Retry-After","1");http.Error(w,"rate limit exceeded",429);return}
