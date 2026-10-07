@@ -23,7 +23,15 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-      - name: Unit and integration tests
+      - name: Cache package tests
+        run: go test -v ./internal/cache
+      - name: Edge unit tests
+        run: go test -v -run 'TestCleanAssetPath|TestPlaybackToken|TestHealth' ./internal/edge
+      - name: Edge request coalescing test
+        run: go test -v -run TestRequestCoalescing ./internal/edge
+      - name: Edge origin failover test
+        run: go test -v -run TestOriginFailover ./internal/edge
+      - name: Full test suite
         run: go test ./...
       - name: Race detector
         run: go test -race ./...
