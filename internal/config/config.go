@@ -6,6 +6,8 @@ type Config struct {
     ListenAddr string
     OriginURL string
     OriginURLs []string
+    ShieldURLs []string
+    EdgeURLs []string
     OriginAuthToken string
     PlaybackSecret string
     PurgeToken string
@@ -14,12 +16,16 @@ type Config struct {
     MaxCacheBytes int64
     SegmentTTL time.Duration
     ManifestTTL time.Duration
+    StaleIfError time.Duration
     MaxSegmentBytes int64
     AllowedOrigins []string
     NodeID string
     RateLimitPerMin int
     RateLimitBurst int
     OriginTimeout time.Duration
+    MaxIdleConns int
+    MaxIdleConnsPerHost int
+    MaxConnsPerHost int
 }
 
 func Load() Config {
@@ -27,6 +33,8 @@ func Load() Config {
         ListenAddr: env("LISTEN_ADDR",":8080"),
         OriginURL: strings.TrimRight(os.Getenv("ORIGIN_URL"),"/"),
         OriginURLs: split(os.Getenv("ORIGIN_URLS")),
+        ShieldURLs: split(os.Getenv("SHIELD_URLS")),
+        EdgeURLs: split(os.Getenv("EDGE_URLS")),
         OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
         PlaybackSecret: os.Getenv("PLAYBACK_SECRET"),
         PurgeToken: os.Getenv("PURGE_TOKEN"),
@@ -35,12 +43,16 @@ func Load() Config {
         MaxCacheBytes: integer("MAX_CACHE_BYTES",2<<30),
         SegmentTTL: duration("SEGMENT_TTL",20*time.Second),
         ManifestTTL: duration("MANIFEST_TTL",2*time.Second),
+        StaleIfError: duration("STALE_IF_ERROR",30*time.Second),
         MaxSegmentBytes: integer("MAX_SEGMENT_BYTES",16<<20),
         AllowedOrigins: split(os.Getenv("ALLOWED_ORIGINS")),
         NodeID: env("NODE_ID","local"),
         RateLimitPerMin: int(integer("RATE_LIMIT_PER_MIN",1200)),
         RateLimitBurst: int(integer("RATE_LIMIT_BURST",300)),
         OriginTimeout: duration("ORIGIN_TIMEOUT",10*time.Second),
+        MaxIdleConns: int(integer("MAX_IDLE_CONNS",4096)),
+        MaxIdleConnsPerHost: int(integer("MAX_IDLE_CONNS_PER_HOST",1024)),
+        MaxConnsPerHost: int(integer("MAX_CONNS_PER_HOST",0)),
     }
 }
 func env(k,f string)string{if v:=os.Getenv(k);v!=""{return v};return f}
