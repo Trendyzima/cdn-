@@ -42,7 +42,7 @@ jobs:
           mkdir -p container/cache
           CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o container/testagram-edge ./cmd/edge
           cp /etc/ssl/certs/ca-certificates.crt container/ca-certificates.crt
-          touch container/cache/.keep
+          touch container/cache/keep.txt
       - name: Upload container inputs
         uses: actions/upload-artifact@v4
         with:
