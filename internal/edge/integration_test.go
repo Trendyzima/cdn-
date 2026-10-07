@@ -28,3 +28,11 @@ func TestRequestCoalescing(t *testing.T){
  wg.Wait()
  if got:=calls.Load();got!=1{t.Fatalf("expected one origin call, got %d",got)}
 }
+
+func TestOriginFailover(t *testing.T){
+ bad:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){http.Error(w,"bad",500)}));defer bad.Close()
+ good:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){_,_=w.Write([]byte("ok"))}));defer good.Close()
+ cfg:=config.Config{CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,MaxSegmentBytes:1<<20,OriginURLs:[]string{bad.URL,good.URL},NodeID:"test",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second}
+ s:=New(cfg);rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts",nil))
+ if rr.Code!=200||rr.Body.String()!="ok"{t.Fatalf("failover: status=%d body=%q",rr.Code,rr.Body.String())}
+}
