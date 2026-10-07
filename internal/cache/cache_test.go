@@ -1,6 +1,6 @@
 package cache
 
-import ("testing";"time")
+import ("os";"testing";"time")
 
 func TestCachePutGetAndExpiry(t *testing.T){
  c,err:=New(t.TempDir(),1024);if err!=nil{t.Fatal(err)}
@@ -10,6 +10,14 @@ func TestCachePutGetAndExpiry(t *testing.T){
  if _,err=c.Get("a");err!=ErrMiss{t.Fatalf("expected miss, got %v",err)}
  if _,err=c.GetStale("a");err!=nil{t.Fatalf("expected stale entry, got %v",err)}
 }
+func TestCacheReplacementRemovesOldObject(t *testing.T){
+ c,err:=New(t.TempDir(),1024);if err!=nil{t.Fatal(err)}
+ first,err:=c.Put("same",[]byte("first"),time.Minute,0);if err!=nil{t.Fatal(err)}
+ second,err:=c.Put("same",[]byte("second"),time.Minute,0);if err!=nil{t.Fatal(err)}
+ if _,err:=os.Stat(first.Path);!os.IsNotExist(err){t.Fatalf("old cache object still exists: %v",err)}
+ if data,err:=os.ReadFile(second.Path);err!=nil||string(data)!="second"{t.Fatalf("replacement object invalid: %v %q",err,string(data))}
+}
+
 func TestCachePutRejectsNegativeStale(t *testing.T){c,err:=New(t.TempDir(),1024);if err!=nil{t.Fatal(err)};if _,err=c.Put("a",[]byte("x"),time.Minute,-time.Second);err==nil{t.Fatal("expected negative stale window rejection")}}
 func TestCacheEvictsLRU(t *testing.T){
  c,err:=New(t.TempDir(),10);if err!=nil{t.Fatal(err)}
