@@ -39,7 +39,11 @@ func(c *Cache)Put(key string,data []byte,ttl,staleFor time.Duration)(Entry,error
  name:=filepath.Join(c.root,safeName(key));tmp,err:=os.CreateTemp(c.root,".cache-*");if err!=nil{return Entry{},err};tmpName:=tmp.Name();defer os.Remove(tmpName)
  if _,err=tmp.Write(data);err!=nil{_ = tmp.Close();return Entry{},err};if err=tmp.Chmod(0640);err!=nil{_ = tmp.Close();return Entry{},err};if err=tmp.Close();err!=nil{return Entry{},err}
  c.mu.Lock();defer c.mu.Unlock()
- if old,ok:=c.items[key];ok{c.detachLocked(old)}
+ if old,ok:=c.items[key];ok{
+  oldEntry:=old.Value.(item).e
+  c.detachLocked(old)
+  _ = os.Remove(oldEntry.Path)
+}
  if err=os.Rename(tmpName,name);err!=nil{return Entry{},err}
  now:=time.Now();e:=Entry{Key:key,Path:name,Size:int64(len(data)),CreatedAt:now,ExpiresAt:now.Add(ttl),StaleUntil:now.Add(ttl+staleFor)}
  c.items[key]=c.lru.PushFront(item{e:e});c.bytes+=e.Size
