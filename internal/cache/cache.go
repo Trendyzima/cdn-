@@ -22,6 +22,16 @@ func NewWithHot(root string,maxBytes,hotMaxBytes int64)(*Cache,error){if maxByte
 
 func(c *Cache)GetHot(key string)(Entry,[]byte,error){c.mu.Lock();el,ok:=c.hot[key];if !ok{c.mu.Unlock();return Entry{},nil,ErrMiss};h:=el.Value.(hotItem);if !time.Now().Before(h.e.ExpiresAt){c.hotRemoveLocked(el);c.mu.Unlock();return Entry{},nil,ErrMiss};c.hotLRU.MoveToFront(el);e:=h.e;data:=h.data;c.mu.Unlock();return e,data,nil}
 
+
+// GetWithHot returns the object and promotes eligible disk hits into the bounded RAM tier.
+// This makes the hot tier useful after process restarts and after an item has been evicted from RAM.
+func(c *Cache)GetWithHot(key string)(Entry,[]byte,error){
+ if e,data,err:=c.GetHot(key);err==nil{return e,data,nil}
+ e,err:=c.Get(key);if err!=nil{return Entry{},nil,err}
+ data,err:=os.ReadFile(e.Path);if err!=nil{c.Delete(key);return Entry{},nil,ErrMiss}
+ c.mu.Lock();if c.hotMaxBytes>0&&e.Size<=c.hotMaxBytes{c.hotPutLocked(e,data)};c.mu.Unlock()
+ return e,data,nil
+}
 func(c *Cache)Get(key string)(Entry,error){
  c.mu.Lock();el,ok:=c.items[key];if !ok{c.mu.Unlock();return Entry{},ErrMiss};e:=el.Value.(item).e;now:=time.Now()
  if !now.Before(e.ExpiresAt){if !now.Before(e.StaleUntil){c.removeLocked(el)};c.mu.Unlock();return Entry{},ErrMiss}
