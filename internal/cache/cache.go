@@ -42,8 +42,8 @@ func(c *Cache)Put(key string,data []byte,ttl,staleFor time.Duration)(Entry,error
  name:=filepath.Join(c.root,safeName(key));tmp,err:=os.CreateTemp(c.root,".cache-*");if err!=nil{return Entry{},err};tmpName:=tmp.Name();defer os.Remove(tmpName)
  if _,err=tmp.Write(data);err!=nil{_ = tmp.Close();return Entry{},err};if err=tmp.Chmod(0640);err!=nil{_ = tmp.Close();return Entry{},err};if err=tmp.Close();err!=nil{return Entry{},err}
  c.mu.Lock();defer c.mu.Unlock()
- if old,ok:=c.items[key];ok{c.detachLocked(old)}
  if err=os.Rename(tmpName,name);err!=nil{return Entry{},err}
+ if old,ok:=c.items[key];ok{c.detachMetadataLocked(old)}
  now:=time.Now();e:=Entry{Key:key,Path:name,Size:int64(len(data)),CreatedAt:now,ExpiresAt:now.Add(ttl),StaleUntil:now.Add(ttl+staleFor)}
  c.items[key]=c.lru.PushFront(item{e:e});c.bytes+=e.Size
  if c.hotMaxBytes>0 && e.Size<=c.hotMaxBytes { c.hotPutLocked(e,data) }
@@ -53,7 +53,8 @@ func(c *Cache)Put(key string,data []byte,ttl,staleFor time.Duration)(Entry,error
 func(c *Cache)Delete(key string)bool{c.mu.Lock();defer c.mu.Unlock();el,ok:=c.items[key];if !ok{return false};c.removeLocked(el);return true}
 func(c *Cache)Clear(){c.mu.Lock();defer c.mu.Unlock();for c.lru.Len()>0{c.removeLocked(c.lru.Back())};for c.hotLRU.Len()>0{c.hotRemoveLocked(c.hotLRU.Back())}}
 func(c *Cache)Stats()(int,int64,int64){c.mu.Lock();defer c.mu.Unlock();return len(c.items),c.bytes,c.maxBytes}
-func(c *Cache)detachLocked(el *list.Element){if el==nil{return};e:=el.Value.(item).e;delete(c.items,e.Key);c.bytes-=e.Size;if c.bytes<0{c.bytes=0};if h,ok:=c.hot[e.Key];ok{c.hotRemoveLocked(h)};c.lru.Remove(el)}
+func(c *Cache)detachMetadataLocked(el *list.Element){if el==nil{return};e:=el.Value.(item).e;delete(c.items,e.Key);c.bytes-=e.Size;if c.bytes<0{c.bytes=0};if h,ok:=c.hot[e.Key];ok{c.hotRemoveLocked(h)};c.lru.Remove(el)}
+func(c *Cache)detachLocked(el *list.Element){if el==nil{return};e:=el.Value.(item).e;_ = os.Remove(e.Path);c.detachMetadataLocked(el)}
 func(c *Cache)removeLocked(el *list.Element){if el==nil{return};e:=el.Value.(item).e;_ = os.Remove(e.Path);delete(c.items,e.Key);c.bytes-=e.Size;if c.bytes<0{c.bytes=0};c.lru.Remove(el)}
 type hotItem struct{e Entry;data []byte}
 func(c *Cache)hotPutLocked(e Entry,data []byte){if old,ok:=c.hot[e.Key];ok{c.hotBytes-=old.Value.(hotItem).e.Size;c.hotLRU.Remove(old);delete(c.hot,e.Key)};h:=c.hotLRU.PushFront(hotItem{e:e,data:data});c.hot[e.Key]=h;c.hotBytes+=e.Size;for c.hotBytes>c.hotMaxBytes{back:=c.hotLRU.Back();if back==nil{break};c.hotRemoveLocked(back)}}
