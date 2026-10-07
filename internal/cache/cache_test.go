@@ -20,3 +20,11 @@ func TestCacheEvictsLRU(t *testing.T){
  if _,err=c.Get("b");err!=ErrMiss{t.Fatal("expected b to be evicted")}
  if _,err=c.Get("a");err!=nil{t.Fatal("a should remain hot")}
 }
+
+func TestHotCache(t *testing.T){
+ c,err:=NewWithHot(t.TempDir(),1024,8);if err!=nil{t.Fatal(err)}
+ if _,err=c.Put("hot",[]byte("12345678"),time.Minute,time.Minute);err!=nil{t.Fatal(err)}
+ e,data,err:=c.GetHot("hot");if err!=nil||e.Size!=8||string(data)!="12345678"{t.Fatalf("hot get: %+v %q %v",e,data,err)}
+ if _,err=c.Put("cold",[]byte("abcdefgh"),time.Minute,time.Minute);err!=nil{t.Fatal(err)}
+ if _,_,err=c.GetHot("hot");err==nil{t.Fatal("least-recently-used hot entry should be evicted")}
+}
