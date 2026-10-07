@@ -1,6 +1,7 @@
 package edge
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -36,4 +37,17 @@ func TestTVPlaylistRewrite(t *testing.T) {
 	if !strings.Contains(out, "/v1/tv/channel-1/") {
 		t.Fatalf("expected CDN child URL: %s", out)
 	}
+}
+
+func TestTVRedirectRejectsPrivateTarget(t *testing.T) {
+  cfg := testConfig(t)
+  cfg.PlaybackSecret = "test-secret"
+  s := New(cfg)
+  base, _ := url.Parse("https://public.example/live.m3u8")
+  req := &http.Request{URL: base}
+  redirect, _ := url.Parse("http://127.0.0.1/private")
+  req.URL = redirect
+  if err := s.tvClient.CheckRedirect(req, nil); err == nil {
+    t.Fatal("expected private/insecure TV redirect to be rejected")
+  }
 }
