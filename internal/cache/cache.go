@@ -44,15 +44,15 @@ func(c *Cache)Get(key string)(Entry,error){
 }
 func(c *Cache)Put(key string,data []byte,ttl time.Duration)(Entry,error){
     if ttl<=0{return Entry{},errors.New("cache ttl must be positive")}
-    c.mu.Lock();defer c.mu.Unlock()
     if int64(len(data))>c.maxBytes{return Entry{},errors.New("object exceeds cache capacity")}
-    if old,ok:=c.items[key];ok{c.removeLocked(old)}
     name:=filepath.Join(c.root,safeName(key))
     tmp,err:=os.CreateTemp(c.root,".cache-*");if err!=nil{return Entry{},err}
     tmpName:=tmp.Name();defer os.Remove(tmpName)
     if _,err=tmp.Write(data);err!=nil{_ = tmp.Close();return Entry{},err}
     if err=tmp.Chmod(0640);err!=nil{_ = tmp.Close();return Entry{},err}
     if err=tmp.Close();err!=nil{return Entry{},err}
+    c.mu.Lock();defer c.mu.Unlock()
+    if old,ok:=c.items[key];ok{c.removeLocked(old)}
     if err=os.Rename(tmpName,name);err!=nil{return Entry{},err}
     e:=Entry{Key:key,Path:name,Size:int64(len(data)),ExpiresAt:time.Now().Add(ttl)}
     c.items[key]=c.lru.PushFront(item{e:e});c.bytes+=e.Size
