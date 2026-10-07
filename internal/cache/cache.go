@@ -13,7 +13,7 @@ import (
 
 var ErrMiss = errors.New("cache miss")
 
-type Entry struct{Key,Path string;Size int64;ExpiresAt,StaleUntil time.Time}
+type Entry struct{Key,Path string;Size int64;CreatedAt,ExpiresAt,StaleUntil time.Time}
 type Cache struct{mu sync.Mutex;root string;maxBytes,bytes int64;items map[string]*list.Element;lru *list.List}
 type item struct{e Entry}
 
@@ -41,7 +41,7 @@ func(c *Cache)Put(key string,data []byte,ttl,staleFor time.Duration)(Entry,error
  c.mu.Lock();defer c.mu.Unlock()
  if old,ok:=c.items[key];ok{c.detachLocked(old)}
  if err=os.Rename(tmpName,name);err!=nil{return Entry{},err}
- now:=time.Now();e:=Entry{Key:key,Path:name,Size:int64(len(data)),ExpiresAt:now.Add(ttl),StaleUntil:now.Add(ttl+staleFor)}
+ now:=time.Now();e:=Entry{Key:key,Path:name,Size:int64(len(data)),CreatedAt:now,ExpiresAt:now.Add(ttl),StaleUntil:now.Add(ttl+staleFor)}
  c.items[key]=c.lru.PushFront(item{e:e});c.bytes+=e.Size
  for c.bytes>c.maxBytes{c.removeLocked(c.lru.Back())}
  return e,nil
