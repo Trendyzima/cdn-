@@ -19,7 +19,7 @@ func main() {
         Handler:           server.Handler(),
         ReadHeaderTimeout: 10 * time.Second,
         ReadTimeout:       30 * time.Second,
-        WriteTimeout:      30 * time.Second,
+        WriteTimeout:      2 * time.Minute,
         IdleTimeout:       120 * time.Second,
     }
 
