@@ -95,7 +95,7 @@ func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string
   }
   if f.err == nil && !blockingReload {
     ttl := ttlForTV(s.cfg,rel)
-    if _,e := s.cache.Put(key,f.data,ttl,s.cfg.StaleIfError); e != nil { f.err=e }
+    if _,e := s.cache.Put(key,f.data,ttl,func() time.Duration { if strings.HasSuffix(strings.ToLower(rel),".m3u8") { return minDuration(s.cfg.StaleIfError,30*time.Second) }; return s.cfg.SegmentStaleFor }()); e != nil { f.err=e }
   }
   s.inflight.Add(^uint64(0))
   s.mu.Lock(); close(f.done); delete(s.tvFetching,key); s.mu.Unlock()
@@ -221,3 +221,5 @@ func acceptsGzip(r *http.Request)bool {
   }
   return false
 }
+
+func minDuration(a,b time.Duration) time.Duration { if a < b { return a }; return b }
