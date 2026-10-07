@@ -82,7 +82,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if r.Method!=http.MethodGet&&r.Method!=http.MethodHead{http.Error(w,"method not allowed",405);return}
  rel,ok:=cleanAssetPath(r.URL.Path);if !ok{s.rejected.Add(1);http.Error(w,"invalid path",400);return}
  if !s.authorized(rel,r.URL.Query().Get("token")){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
- if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));s.serveEntry(w,r,e);return}
+ if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveEntry(w,r,e);return}
  stale,staleErr:=s.cache.GetStale(rel);s.misses.Add(1)
  ttl:=s.cfg.SegmentTTL;if strings.HasSuffix(strings.ToLower(rel),".m3u8"){ttl=s.cfg.ManifestTTL}
  data,err:=s.fetchCoalesced(rel,ttl,s.cfg.StaleIfError)
@@ -160,8 +160,8 @@ func dedupe(in []string)[]string{seen:=map[string]bool{};out:=[]string{};for _,x
 func cleanAssetPath(p string)(string,bool){p=strings.TrimPrefix(p,"/v1/");if p==""||strings.Contains(p,"\\"){return "",false};for _,segment:=range strings.Split(p,"/"){if segment==".."{return "",false}};c:=path.Clean("/"+p);if c=="/"||strings.HasPrefix(c,"/../"){return "",false};return strings.TrimPrefix(c,"/"),true}
 func setType(w http.ResponseWriter,rel string){l:=strings.ToLower(rel);switch{case strings.HasSuffix(l,".m3u8"):w.Header().Set("Content-Type","application/vnd.apple.mpegurl");case strings.HasSuffix(l,".ts"):w.Header().Set("Content-Type","video/mp2t");case strings.HasSuffix(l,".m4s"):w.Header().Set("Content-Type","video/iso.segment");case strings.HasSuffix(l,".mp4"):w.Header().Set("Content-Type","video/mp4");case strings.HasSuffix(l,".aac"):w.Header().Set("Content-Type","audio/aac");case strings.HasSuffix(l,".mp3"):w.Header().Set("Content-Type","audio/mpeg");case strings.HasSuffix(l,".vtt"):w.Header().Set("Content-Type","text/vtt");default:w.Header().Set("Content-Type","application/octet-stream")}}
 func cacheControl(rel string)string{if strings.HasSuffix(strings.ToLower(rel),".m3u8"){return "public, max-age=1, s-maxage=1, stale-while-revalidate=2, stale-if-error=30"};return "public, max-age=15, s-maxage=20, stale-while-revalidate=30, stale-if-error=30"}
-func etagFile(e cache.Entry)string{return "\""+fmt.Sprintf("%x-%x",e.Size,e.ExpiresAt.UnixNano())+"\""}
+func etagFile(e cache.Entry)string{return "\""+fmt.Sprintf("%x-%x",e.Size,e.CreatedAt.UnixNano())+"\""}
 func hash(b []byte)string{h:=sha256.Sum256(b);return hex.EncodeToString(h[:])[:16]}
-func age(e cache.Entry)string{a:=time.Since(e.ExpiresAt);if a<0{return "0"};return strconv.FormatInt(int64(a/time.Second),10)}
+func age(e cache.Entry)string{a:=time.Since(e.CreatedAt);if a<0{return "0"};return strconv.FormatInt(int64(a/time.Second),10)}
 func(s *Server)cors(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){o:=r.Header.Get("Origin");allowed:=len(s.cfg.AllowedOrigins)==0;for _,a:=range s.cfg.AllowedOrigins{if o==a{allowed=true;break}};if allowed&&o!=""{w.Header().Set("Access-Control-Allow-Origin",o);w.Header().Set("Vary","Origin")};if r.Method=="OPTIONS"{w.Header().Set("Access-Control-Allow-Methods","GET,HEAD,OPTIONS");w.Header().Set("Access-Control-Allow-Headers","Range,Content-Type");w.WriteHeader(204);return};next.ServeHTTP(w,r)})}
 func(s *Server)security(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Referrer-Policy","no-referrer");w.Header().Set("X-Frame-Options","DENY");next.ServeHTTP(w,r)})}
