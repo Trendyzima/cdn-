@@ -54,7 +54,7 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   s.misses.Add(1)
   data, contentType, fetchErr := s.fetchTVCoalesced(cacheKey,fetchTarget,scope,rel,blockingReload)
   if fetchErr != nil {
-    if staleErr == nil {
+    if staleErr == nil && !blockingReload {
       s.staleHits.Add(1); w.Header().Set("X-Cache","STALE"); w.Header().Set("Cache-Status","testagram; stale-if-error")
       w.Header().Set("Warning","110 - Response is stale"); w.Header().Set("Age",age(stale)); setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0)); s.serveEntry(w,r,stale); return
     }
@@ -77,7 +77,14 @@ func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string
   s.mu.Lock()
   if f,ok := s.tvFetching[key]; ok { s.mu.Unlock(); <-f.done; return f.data,f.contentType,f.err }
   if !blockingReload {
-  if e,err := s.cache.Get(key); err == nil { s.mu.Unlock(); data,readErr := os.ReadFile(e.Path); ct := "application/octet-stream"; if strings.HasSuffix(strings.ToLower(rel),".m3u8") { ct="application/vnd.apple.mpegurl; charset=utf-8" }; return data,ct,readErr }
+    if e,err := s.cache.Get(key); err == nil {
+      s.mu.Unlock()
+      data,readErr := os.ReadFile(e.Path)
+      ct := "application/octet-stream"
+      if strings.HasSuffix(strings.ToLower(rel),".m3u8") { ct="application/vnd.apple.mpegurl; charset=utf-8" }
+      return data,ct,readErr
+    }
+  }
   f := &tvFetch{done:make(chan struct{})}; s.tvFetching[key]=f; s.mu.Unlock()
 
   s.inflight.Add(1); s.upstream.Add(1)
