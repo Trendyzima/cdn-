@@ -8,6 +8,7 @@ import (
  "fmt"
  "io"
  "log"
+ "os"
  "net"
  "net/http"
  "net/url"
@@ -80,7 +81,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  rel,ok:=cleanAssetPath(r.URL.Path);if !ok{s.rejected.Add(1);http.Error(w,"invalid path",400);return}
  if !s.authorized(rel,r.URL.Query().Get("token")){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
  if e,err:=s.cache.Get(rel);err==nil{
-  s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit")
+  s.hits.Add(1);if st,err:=os.Stat(e.Path);err==nil{s.served.Add(uint64(st.Size()))};setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit")
   w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));http.ServeFile(w,r,e.Path);return
  }
  s.misses.Add(1)
@@ -105,6 +106,7 @@ func(s *Server)fetchOrigin(rel string)([]byte,error){
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   if s.cfg.OriginAuthToken!=""{req.Header.Set("Authorization","Bearer "+s.cfg.OriginAuthToken)}
   resp,e:=s.client.Do(req);if e!=nil{s.blockOrigin(baseURL);continue}
+  if resp.StatusCode==404||resp.StatusCode==410{resp.Body.Close();return nil,fmt.Errorf("origin returned %d",resp.StatusCode)}
   if resp.StatusCode<200||resp.StatusCode>=300{resp.Body.Close();s.blockOrigin(baseURL);continue}
   data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1));resp.Body.Close()
   if e!=nil{s.blockOrigin(baseURL);continue}
