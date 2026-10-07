@@ -7,7 +7,7 @@ import (
 )
 
 func TestTVTokenBindsSource(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.PlaybackSecret = "test-secret"
 	s := New(cfg)
 	src := "https://example.com/live/index.m3u8"
