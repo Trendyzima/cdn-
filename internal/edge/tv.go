@@ -1,6 +1,7 @@
 package edge
 
 import (
+  "compress/gzip"
   "context"
   "crypto/hmac"
   "crypto/sha256"
@@ -34,8 +35,11 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   target, err := url.Parse(src)
   if err != nil || target.Scheme != "https" || isPrivateHost(target.Hostname()) { http.Error(w,"invalid stream source",400); return }
   if !s.authorizedTV(scope,src,token) { s.rejected.Add(1); http.Error(w,"unauthorized",401); return }
+  directives := tvDeliveryDirectives(r.URL.Query(), strings.HasSuffix(strings.ToLower(target.Path),".m3u8"))
+  fetchTarget := target
+  if len(directives) > 0 { fetchTarget = cloneURLWithQuery(target,directives) }
 
-  cacheKey := "tv/"+scope+"/"+hashString(src)+"/"+strings.Join(parts[2:],"/")
+  cacheKey := "tv/"+scope+"/"+hashString(fetchTarget.String())+"/"+strings.Join(parts[2:],"/")
   if e, err := s.cache.Get(cacheKey); err == nil {
     s.hits.Add(1); w.Header().Set("X-Cache","HIT"); w.Header().Set("Cache-Status","testagram; hit")
     setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(tvDeliveryDirectives(r.URL.Query(),strings.HasSuffix(strings.ToLower(target.Path),".m3u8")))>0)); w.Header().Set("ETag",etagFile(e)); if strings.HasSuffix(strings.ToLower(rel),".m3u8") { w.Header().Set("Vary","Accept-Encoding") }
@@ -44,19 +48,24 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
 
   stale, staleErr := s.cache.GetStale(cacheKey)
   s.misses.Add(1)
-  data, contentType, fetchErr := s.fetchTVCoalesced(cacheKey,target,scope,rel)
+  data, contentType, fetchErr := s.fetchTVCoalesced(cacheKey,fetchTarget,scope,rel)
   if fetchErr != nil {
     if staleErr == nil {
       s.staleHits.Add(1); w.Header().Set("X-Cache","STALE"); w.Header().Set("Cache-Status","testagram; stale-if-error")
-      w.Header().Set("Warning","110 - Response is stale"); w.Header().Set("Age",age(stale)); setType(w,rel); s.serveEntry(w,r,stale); return
+      w.Header().Set("Warning","110 - Response is stale"); w.Header().Set("Age",age(stale)); setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0)); s.serveEntry(w,r,stale); return
     }
     http.Error(w,"upstream unavailable",502); return
   }
 
   w.Header().Set("X-Cache","MISS"); w.Header().Set("Cache-Status","testagram; fwd=uri-miss")
-  w.Header().Set("Content-Type",contentType); w.Header().Set("Cache-Control",tvCacheControl(rel,len(requestDirectives)>0)); w.Header().Set("ETag","\""+hash(data)+"\"")
+  w.Header().Set("Content-Type",contentType); w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0)); w.Header().Set("ETag","\""+hash(data)+"\"")
+  if isPlaylistResponse(contentType,data) { w.Header().Set("Vary","Accept-Encoding") }
   s.served.Add(uint64(len(data)))
   if r.Method == http.MethodHead { w.WriteHeader(200); return }
+  if isPlaylistResponse(contentType,data) && acceptsGzip(r) {
+    w.Header().Set("Content-Encoding","gzip")
+    gw:=gzip.NewWriter(w); w.WriteHeader(200); _,_=gw.Write(data); _=gw.Close(); return
+  }
   w.WriteHeader(200); _,_ = w.Write(data)
 }
 
@@ -164,4 +173,39 @@ func parsePositiveInt64(value string)(int64,error) {
   if value=="" { return 0,fmt.Errorf("invalid integer") }; var n int64
   for _,r:=range value { if r<'0'||r>'9' { return 0,fmt.Errorf("invalid integer") }; n=n*10+int64(r-'0'); if n<0{return 0,fmt.Errorf("integer overflow")} }
   if n<=0{return 0,fmt.Errorf("invalid integer")}; return n,nil
+}
+
+func cloneURLWithQuery(base *url.URL,q url.Values)*url.URL {
+  u:=*base; merged:=u.Query()
+  for k,values:=range q { for _,v:=range values { merged.Add(k,v) } }
+  u.RawQuery=merged.Encode(); return &u
+}
+
+func tvDeliveryDirectives(q url.Values,playlist bool) url.Values {
+  if !playlist { return nil }
+  out:=url.Values{}
+  for _,key:=range []string{"_HLS_msn","_HLS_part","_HLS_skip","_HLS_push","_HLS_report"} {
+    for _,v:=range q[key] { if len(v)<=64 { out.Add(key,v) } }
+  }
+  if out.Get("_HLS_part")!="" && out.Get("_HLS_msn")=="" { out.Del("_HLS_part") }
+  return out
+}
+
+func tvCacheControl(rel string,blocking bool)string {
+  if strings.HasSuffix(strings.ToLower(rel),".m3u8") {
+    if blocking { return "public, max-age=0, s-maxage=1, stale-while-revalidate=1, stale-if-error=6" }
+    return "public, max-age=1, s-maxage=1, stale-while-revalidate=1, stale-if-error=30"
+  }
+  return cacheControl(rel)
+}
+
+func isPlaylistResponse(contentType string,data []byte)bool {
+  return strings.Contains(strings.ToLower(contentType),"mpegurl") || strings.HasPrefix(strings.TrimSpace(string(data)),"#EXTM3U")
+}
+
+func acceptsGzip(r *http.Request)bool {
+  for _,part:=range strings.Split(r.Header.Get("Accept-Encoding"),",") {
+    if strings.EqualFold(strings.TrimSpace(strings.SplitN(part,";",2)[0]),"gzip") { return true }
+  }
+  return false
 }
