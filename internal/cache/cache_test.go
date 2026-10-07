@@ -10,7 +10,7 @@ func TestCachePutGetAndExpiry(t *testing.T){
  if _,err=c.Get("a");err!=ErrMiss{t.Fatalf("expected miss, got %v",err)}
 }
 func TestCacheEvictsLRU(t *testing.T){
- c,err:=New(t.TempDir(),8);if err!=nil{t.Fatal(err)}
+ c,err:=New(t.TempDir(),10);if err!=nil{t.Fatal(err)}
  if _,err=c.Put("a",[]byte("12345"),time.Minute);err!=nil{t.Fatal(err)}
  if _,err=c.Put("b",[]byte("6789"),time.Minute);err!=nil{t.Fatal(err)}
  if _,err=c.Get("a");err!=nil{t.Fatal(err)}
