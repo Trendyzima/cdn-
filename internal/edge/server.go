@@ -88,7 +88,16 @@ func(s *Server)serveEntry(w http.ResponseWriter,r *http.Request,e cache.Entry){
 }
 
 func(s *Server)fetchCoalesced(key string,ttl,staleFor time.Duration)([]byte,error){
- s.mu.Lock();if f,ok:=s.fetching[key];ok{s.mu.Unlock();<-f.done;return f.data,f.err}
+ s.mu.Lock()
+ if f,ok:=s.fetching[key];ok{s.mu.Unlock();<-f.done;return f.data,f.err}
+ // A caller may have missed the cache before the current leader published it.
+ // Recheck after acquiring the coalescing lock so late arrivals do not start
+ // a second origin request.
+ if e,err:=s.cache.Get(key);err==nil{
+  s.mu.Unlock()
+  data,readErr:=os.ReadFile(e.Path)
+  return data,readErr
+ }
  f:=&fetch{done:make(chan struct{})};s.fetching[key]=f;s.mu.Unlock()
  s.inflight.Add(1);s.upstream.Add(1);f.data,f.err=s.fetchUpstream(key);s.inflight.Add(^uint64(0))
  if f.err==nil{if _,e:=s.cache.Put(key,f.data,ttl,staleFor);e!=nil{log.Printf("cache put %s: %v",key,e)}}
