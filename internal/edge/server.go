@@ -7,6 +7,7 @@ import (
  "encoding/json"
  "bytes"
  "fmt"
+ "hash/fnv"
  "io"
  "log"
  "net"
@@ -33,18 +34,20 @@ type Server struct {
  fetching map[string]*fetch
  originsMu sync.Mutex
  badUntil map[string]time.Time
- rateMu sync.Mutex
- rates map[string]*bucket
+ rateShards [32]rateShard
 }
 type fetch struct{done chan struct{};data []byte;err error}
 type bucket struct{tokens float64;last time.Time}
+type rateShard struct{mu sync.Mutex;rates map[string]*bucket}
 
 func New(cfg config.Config)*Server{
  c,e:=cache.New(cfg.CacheDir,cfg.MaxCacheBytes);if e!=nil{log.Fatalf("cache init: %v",e)}
  origins:=append([]string{},cfg.OriginURLs...);if cfg.OriginURL!=""{origins=append([]string{cfg.OriginURL},origins...)}
  cfg.OriginURLs=dedupe(origins);cfg.ShieldURLs=dedupe(cfg.ShieldURLs);cfg.EdgeURLs=dedupe(cfg.EdgeURLs)
  tr:=&http.Transport{MaxIdleConns:cfg.MaxIdleConns,MaxIdleConnsPerHost:cfg.MaxIdleConnsPerHost,MaxConnsPerHost:cfg.MaxConnsPerHost,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:5*time.Second,ResponseHeaderTimeout:cfg.OriginTimeout,ExpectContinueTimeout:1*time.Second}
- return &Server{cfg:cfg,cache:c,client:&http.Client{Transport:tr,Timeout:cfg.OriginTimeout},fetching:map[string]*fetch{},badUntil:map[string]time.Time{},rates:map[string]*bucket{}}
+ sv:=&Server{cfg:cfg,cache:c,client:&http.Client{Transport:tr,Timeout:cfg.OriginTimeout},fetching:map[string]*fetch{},badUntil:map[string]time.Time{}}
+ for i:=range sv.rateShards{sv.rateShards[i].rates=make(map[string]*bucket)}
+ return sv
 }
 
 func(s *Server)Handler()http.Handler{
@@ -125,11 +128,12 @@ func(s *Server)clearOrigin(o string){s.originsMu.Lock();delete(s.badUntil,o);s.o
 func(s *Server)rateLimit(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
  if s.cfg.RateLimitPerMin<=0||s.cfg.RateLimitBurst<=0{next.ServeHTTP(w,r);return}
  ip,_,e:=net.SplitHostPort(r.RemoteAddr);if e!=nil{ip=r.RemoteAddr};now:=time.Now();rate:=float64(s.cfg.RateLimitPerMin)/60
- s.rateMu.Lock()
- if len(s.rates)>100000{for k,b:=range s.rates{if now.Sub(b.last)>time.Minute{delete(s.rates,k)}}}
- if len(s.rates)>120000{s.rateMu.Unlock();s.rejected.Add(1);http.Error(w,"rate limiter overloaded",503);return}
- b:=s.rates[ip];if b==nil{b=&bucket{tokens:float64(s.cfg.RateLimitBurst),last:now};s.rates[ip]=b}
- b.tokens+=now.Sub(b.last).Seconds()*rate;if b.tokens>float64(s.cfg.RateLimitBurst){b.tokens=float64(s.cfg.RateLimitBurst)};b.last=now;allowed:=b.tokens>=1;if allowed{b.tokens--};s.rateMu.Unlock()
+ h:=fnv.New32a();_,_=h.Write([]byte(ip));sh:=&s.rateShards[h.Sum32()%uint32(len(s.rateShards))]
+ sh.mu.Lock()
+ if len(sh.rates)>4000{for k,b:=range sh.rates{if now.Sub(b.last)>time.Minute{delete(sh.rates,k)}}}
+ if len(sh.rates)>5000{sh.mu.Unlock();s.rejected.Add(1);http.Error(w,"rate limiter overloaded",503);return}
+ b:=sh.rates[ip];if b==nil{b=&bucket{tokens:float64(s.cfg.RateLimitBurst),last:now};sh.rates[ip]=b}
+ b.tokens+=now.Sub(b.last).Seconds()*rate;if b.tokens>float64(s.cfg.RateLimitBurst){b.tokens=float64(s.cfg.RateLimitBurst)};b.last=now;allowed:=b.tokens>=1;if allowed{b.tokens--};sh.mu.Unlock()
  if !allowed{s.rejected.Add(1);w.Header().Set("Retry-After","1");http.Error(w,"rate limit exceeded",429);return};next.ServeHTTP(w,r)
 })}
 
