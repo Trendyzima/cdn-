@@ -147,7 +147,14 @@ func dedupe(in []string)[]string{seen:=map[string]bool{};out:=[]string{};for _,x
 type bytesReader struct{b []byte;i int64}
 func(r bytesReader)Read(p []byte)(int,error){if r.i>=int64(len(r.b)){return 0,io.EOF};n:=copy(p,r.b[r.i:]);r.i+=int64(n);return n,nil}
 func(r bytesReader)Seek(o int64,w int)(int64,error){var n int64;switch w{case io.SeekStart:n=o;case io.SeekCurrent:n=r.i+o;case io.SeekEnd:n=int64(len(r.b))+o;default:return 0,fmt.Errorf("bad seek")};if n<0{return 0,fmt.Errorf("negative seek")};r.i=n;return n,nil}
-func cleanAssetPath(p string)(string,bool){p=strings.TrimPrefix(p,"/v1/");if p==""||strings.Contains(p,"\\"){return "",false};c:=path.Clean("/"+p);if c=="/"||strings.HasPrefix(c,"/../")||strings.Contains(c,"/../"){return "",false};return strings.TrimPrefix(c,"/"),true}
+func cleanAssetPath(p string)(string,bool){
+ p=strings.TrimPrefix(p,"/v1/")
+ if p==""||strings.Contains(p,"\\"){return "",false}
+ for _,segment:=range strings.Split(p,"/"){if segment==".."{return "",false}}
+ c:=path.Clean("/"+p)
+ if c=="/"||strings.HasPrefix(c,"/../"){return "",false}
+ return strings.TrimPrefix(c,"/"),true
+}
 func setType(w http.ResponseWriter,rel string){l:=strings.ToLower(rel);switch{case strings.HasSuffix(l,".m3u8"):w.Header().Set("Content-Type","application/vnd.apple.mpegurl");case strings.HasSuffix(l,".ts"):w.Header().Set("Content-Type","video/mp2t");case strings.HasSuffix(l,".m4s"):w.Header().Set("Content-Type","video/iso.segment");case strings.HasSuffix(l,".mp4"):w.Header().Set("Content-Type","video/mp4");case strings.HasSuffix(l,".aac"):w.Header().Set("Content-Type","audio/aac");case strings.HasSuffix(l,".mp3"):w.Header().Set("Content-Type","audio/mpeg");case strings.HasSuffix(l,".vtt"):w.Header().Set("Content-Type","text/vtt");default:w.Header().Set("Content-Type","application/octet-stream")}}
 func cacheControl(rel string)string{if strings.HasSuffix(strings.ToLower(rel),".m3u8"){return "public, max-age=1, stale-while-revalidate=2"};return "public, max-age=15, stale-while-revalidate=30"}
 func etagFile(e cache.Entry)string{return "\""+fmt.Sprintf("%x-%x",e.Size,e.ExpiresAt.UnixNano())+"\""}
