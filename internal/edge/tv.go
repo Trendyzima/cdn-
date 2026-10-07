@@ -42,7 +42,7 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   cacheKey := "tv/"+scope+"/"+hashString(fetchTarget.String())+"/"+strings.Join(parts[2:],"/")
   if e, err := s.cache.Get(cacheKey); err == nil {
     s.hits.Add(1); w.Header().Set("X-Cache","HIT"); w.Header().Set("Cache-Status","testagram; hit")
-    setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(tvDeliveryDirectives(r.URL.Query(),strings.HasSuffix(strings.ToLower(target.Path),".m3u8")))>0)); w.Header().Set("ETag",etagFile(e)); if strings.HasSuffix(strings.ToLower(rel),".m3u8") { w.Header().Set("Vary","Accept-Encoding") }
+    setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(tvDeliveryDirectives(r.URL.Query(),strings.HasSuffix(strings.ToLower(target.Path),".m3u8")))>0)); w.Header().Set("ETag",etagFile(e)); w.Header().Set("Age",age(e)); if strings.HasSuffix(strings.ToLower(rel),".m3u8") { w.Header().Set("Vary","Accept-Encoding") }
     s.serveEntry(w,r,e); return
   }
 
