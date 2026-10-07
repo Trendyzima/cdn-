@@ -24,7 +24,7 @@ func TestTVTokenBindsSource(t *testing.T) {
 }
 
 func TestTVPlaylistRewrite(t *testing.T) {
-	cfg := testConfig()
+	cfg := testConfig(t)
 	cfg.PlaybackSecret = "test-secret"
 	s := New(cfg)
 	base, _ := url.Parse("https://example.com/live/master.m3u8")
