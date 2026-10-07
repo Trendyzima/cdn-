@@ -53,7 +53,7 @@ func New(cfg config.Config)*Server{
 func(s *Server)Handler()http.Handler{
  m:=http.NewServeMux()
  m.HandleFunc("/healthz",s.health);m.HandleFunc("/readyz",s.ready);m.HandleFunc("/metrics",s.metrics)
- m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/",s.asset)
+ m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/tv/",s.tvAsset);m.HandleFunc("/v1/",s.asset)
  return s.cors(s.security(s.rateLimit(m)))
 }
 func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");items,bytes,capacity:=s.cache.Stats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"stale_hits":s.staleHits.Load()})}
