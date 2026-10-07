@@ -47,9 +47,11 @@ func New(cfg config.Config)*Server{
  origins:=append([]string{},cfg.OriginURLs...);if cfg.OriginURL!=""{origins=append([]string{cfg.OriginURL},origins...)}
  cfg.OriginURLs=dedupe(origins);cfg.ShieldURLs=dedupe(cfg.ShieldURLs);cfg.EdgeURLs=dedupe(cfg.EdgeURLs)
  tr:=&http.Transport{MaxIdleConns:cfg.MaxIdleConns,MaxIdleConnsPerHost:cfg.MaxIdleConnsPerHost,MaxConnsPerHost:cfg.MaxConnsPerHost,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:5*time.Second,ResponseHeaderTimeout:cfg.OriginTimeout,ExpectContinueTimeout:1*time.Second}
- tvClient := &http.Client{Transport: tr.Clone(), Timeout: cfg.OriginTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+ tvTransport := tr.Clone()
+tvTransport.DialContext = tvDialContext
+tvClient := &http.Client{Transport: tvTransport, Timeout: cfg.OriginTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
   if req.URL.Scheme != "https" || isPrivateHost(req.URL.Hostname()) { return fmt.Errorf("unsafe TV redirect target") }
-  if len(via) >= 5 { return fmt.Errorf("too many TV redirects") }
+  if len(via) >= cfg.TVMaxRedirects { return fmt.Errorf("too many TV redirects") }
   return nil
 }}
 sv:=&Server{cfg:cfg,cache:c,client:&http.Client{Transport:tr,Timeout:cfg.OriginTimeout},tvClient:tvClient,fetching:map[string]*fetch{},tvFetching:map[string]*tvFetch{},badUntil:map[string]time.Time{}}
