@@ -63,7 +63,8 @@ func New(cfg config.Config)*Server{
 }
  tvTransport := tr.Clone()
 tvTransport.DialContext = tvDialContext
-tvClient := &http.Client{Transport: tvTransport, Timeout: cfg.OriginTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+ tvTransport.ResponseHeaderTimeout = 12 * time.Second
+tvClient := &http.Client{Transport: tvTransport, Timeout: cfg.TVOriginTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
   if req.URL.Scheme != "https" || isPrivateHost(req.URL.Hostname()) { return fmt.Errorf("unsafe TV redirect target") }
   if len(via) >= cfg.TVMaxRedirects { return fmt.Errorf("too many TV redirects") }
   return nil
