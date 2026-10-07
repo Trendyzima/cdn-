@@ -90,7 +90,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if err!=nil{http.Error(w,"upstream unavailable",502);return}
  setType(w,rel);w.Header().Set("X-Cache","MISS");w.Header().Set("Cache-Status","testagram; fwd=uri-miss");w.Header().Set("ETag","\""+hash(data)+"\"");w.Header().Set("Cache-Control",cacheControl(rel));s.served.Add(uint64(len(data)));http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
 }
-func(s *Server)serveBytes(w http.ResponseWriter,r *http.Request,data []byte){if r.Method==http.MethodHead{w.WriteHeader(http.StatusOK);return};w.WriteHeader(http.StatusOK);_,_=w.Write(data)}
+func(s *Server)serveBytes(w http.ResponseWriter,r *http.Request,data []byte){http.ServeContent(w,r,"hot",time.Time{},bytes.NewReader(data))}
 
 func(s *Server)serveEntry(w http.ResponseWriter,r *http.Request,e cache.Entry){
  f,err:=os.Open(e.Path);if err!=nil{http.Error(w,"cache object unavailable",502);return}
