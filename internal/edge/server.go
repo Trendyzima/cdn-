@@ -44,7 +44,7 @@ type bucket struct{tokens float64;last time.Time}
 type rateShard struct{mu sync.Mutex;rates map[string]*bucket}
 
 func New(cfg config.Config)*Server{
- c,e:=cache.New(cfg.CacheDir,cfg.MaxCacheBytes);if e!=nil{log.Fatalf("cache init: %v",e)}
+ c,e:=cache.NewWithHot(cfg.CacheDir,cfg.MaxCacheBytes,cfg.HotCacheBytes);if e!=nil{log.Fatalf("cache init: %v",e)}
  origins:=append([]string{},cfg.OriginURLs...);if cfg.OriginURL!=""{origins=append([]string{cfg.OriginURL},origins...)}
  cfg.OriginURLs=dedupe(origins);cfg.ShieldURLs=dedupe(cfg.ShieldURLs);cfg.EdgeURLs=dedupe(cfg.EdgeURLs)
  tr:=&http.Transport{MaxIdleConns:cfg.MaxIdleConns,MaxIdleConnsPerHost:cfg.MaxIdleConnsPerHost,MaxConnsPerHost:cfg.MaxConnsPerHost,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:5*time.Second,ResponseHeaderTimeout:cfg.OriginTimeout,ExpectContinueTimeout:1*time.Second}
@@ -66,9 +66,9 @@ func(s *Server)Handler()http.Handler{
  m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/tv/",s.tvAsset);m.HandleFunc("/v1/",s.asset)
  return s.cors(s.security(s.rateLimit(m)))
 }
-func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");items,bytes,capacity:=s.cache.Stats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"stale_hits":s.staleHits.Load()})}
+func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");items,bytes,capacity:=s.cache.Stats();hotBytes,hotCapacity:=s.cache.HotStats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"hot_cache_bytes":hotBytes,"hot_cache_capacity":hotCapacity,"stale_hits":s.staleHits.Load()})}
 func(s *Server)ready(w http.ResponseWriter,_ *http.Request){if len(s.cfg.OriginURLs)==0&&len(s.cfg.ShieldURLs)==0{http.Error(w,"upstream not configured",503);return};w.WriteHeader(200);_,_=w.Write([]byte("ready"))}
-func(s *Server)metrics(w http.ResponseWriter,_ *http.Request){items,bytes,capacity:=s.cache.Stats();w.Header().Set("Content-Type","text/plain; version=0.0.4");fmt.Fprintf(w,"testagram_edge_cache_hits_total %d\n",s.hits.Load());fmt.Fprintf(w,"testagram_edge_cache_misses_total %d\n",s.misses.Load());fmt.Fprintf(w,"testagram_edge_upstream_requests_total %d\n",s.upstream.Load());fmt.Fprintf(w,"testagram_edge_inflight_requests %d\n",s.inflight.Load());fmt.Fprintf(w,"testagram_edge_bytes_served_total %d\n",s.served.Load());fmt.Fprintf(w,"testagram_edge_rejected_requests_total %d\n",s.rejected.Load());fmt.Fprintf(w,"testagram_edge_stale_hits_total %d\n",s.staleHits.Load());fmt.Fprintf(w,"testagram_edge_cache_items %d\n",items);fmt.Fprintf(w,"testagram_edge_cache_bytes %d\n",bytes);fmt.Fprintf(w,"testagram_edge_cache_capacity_bytes %d\n",capacity)}
+func(s *Server)metrics(w http.ResponseWriter,_ *http.Request){items,bytes,capacity:=s.cache.Stats();w.Header().Set("Content-Type","text/plain; version=0.0.4");fmt.Fprintf(w,"testagram_edge_cache_hits_total %d\n",s.hits.Load());fmt.Fprintf(w,"testagram_edge_cache_misses_total %d\n",s.misses.Load());fmt.Fprintf(w,"testagram_edge_upstream_requests_total %d\n",s.upstream.Load());fmt.Fprintf(w,"testagram_edge_inflight_requests %d\n",s.inflight.Load());fmt.Fprintf(w,"testagram_edge_bytes_served_total %d\n",s.served.Load());fmt.Fprintf(w,"testagram_edge_rejected_requests_total %d\n",s.rejected.Load());fmt.Fprintf(w,"testagram_edge_stale_hits_total %d\n",s.staleHits.Load());fmt.Fprintf(w,"testagram_edge_cache_items %d\n",items);fmt.Fprintf(w,"testagram_edge_cache_bytes %d\n",bytes);fmt.Fprintf(w,"testagram_edge_cache_capacity_bytes %d\n",capacity);hotBytes,hotCapacity:=s.cache.HotStats();fmt.Fprintf(w,"testagram_edge_hot_cache_bytes %d\n",hotBytes);fmt.Fprintf(w,"testagram_edge_hot_cache_capacity_bytes %d\n",hotCapacity)}
 
 func(s *Server)route(w http.ResponseWriter,r *http.Request){
  if len(s.cfg.EdgeURLs)==0{http.Error(w,"edge routing not configured",503);return}
@@ -82,7 +82,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if r.Method!=http.MethodGet&&r.Method!=http.MethodHead{http.Error(w,"method not allowed",405);return}
  rel,ok:=cleanAssetPath(r.URL.Path);if !ok{s.rejected.Add(1);http.Error(w,"invalid path",400);return}
  if !s.authorized(rel,r.URL.Query().Get("token")){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
- if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveEntry(w,r,e);return}
+ if e,data,err:=s.cache.GetHot(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveBytes(w,r,data);return};if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveEntry(w,r,e);return}
  stale,staleErr:=s.cache.GetStale(rel);s.misses.Add(1)
  ttl:=s.cfg.SegmentTTL;if strings.HasSuffix(strings.ToLower(rel),".m3u8"){ttl=s.cfg.ManifestTTL}
  data,err:=s.fetchCoalesced(rel,ttl,s.cfg.StaleIfError)
@@ -90,6 +90,8 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if err!=nil{http.Error(w,"upstream unavailable",502);return}
  setType(w,rel);w.Header().Set("X-Cache","MISS");w.Header().Set("Cache-Status","testagram; fwd=uri-miss");w.Header().Set("ETag","\""+hash(data)+"\"");w.Header().Set("Cache-Control",cacheControl(rel));s.served.Add(uint64(len(data)));http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
 }
+func(s *Server)serveBytes(w http.ResponseWriter,r *http.Request,data []byte){if r.Method==http.MethodHead{w.WriteHeader(http.StatusOK);return};w.WriteHeader(http.StatusOK);_,_=w.Write(data)}
+
 func(s *Server)serveEntry(w http.ResponseWriter,r *http.Request,e cache.Entry){
  f,err:=os.Open(e.Path);if err!=nil{http.Error(w,"cache object unavailable",502);return}
  defer f.Close()
