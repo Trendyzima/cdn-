@@ -47,7 +47,20 @@ func New(cfg config.Config)*Server{
  c,e:=cache.NewWithHot(cfg.CacheDir,cfg.MaxCacheBytes,cfg.HotCacheBytes);if e!=nil{log.Fatalf("cache init: %v",e)}
  origins:=append([]string{},cfg.OriginURLs...);if cfg.OriginURL!=""{origins=append([]string{cfg.OriginURL},origins...)}
  cfg.OriginURLs=dedupe(origins);cfg.ShieldURLs=dedupe(cfg.ShieldURLs);cfg.EdgeURLs=dedupe(cfg.EdgeURLs)
- tr:=&http.Transport{MaxIdleConns:cfg.MaxIdleConns,MaxIdleConnsPerHost:cfg.MaxIdleConnsPerHost,MaxConnsPerHost:cfg.MaxConnsPerHost,IdleConnTimeout:90*time.Second,TLSHandshakeTimeout:5*time.Second,ResponseHeaderTimeout:cfg.OriginTimeout,ExpectContinueTimeout:1*time.Second}
+ tr:=&http.Transport{
+  MaxIdleConns: cfg.MaxIdleConns,
+  MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
+  MaxConnsPerHost: cfg.MaxConnsPerHost,
+  IdleConnTimeout: 90 * time.Second,
+  TLSHandshakeTimeout: 5 * time.Second,
+  ResponseHeaderTimeout: cfg.OriginTimeout,
+  ExpectContinueTimeout: 1 * time.Second,
+  ForceAttemptHTTP2: true,
+  DisableCompression: true,
+  MaxResponseHeaderBytes: 64 << 10,
+  WriteBufferSize: 64 << 10,
+  ReadBufferSize: 64 << 10,
+}
  tvTransport := tr.Clone()
 tvTransport.DialContext = tvDialContext
 tvClient := &http.Client{Transport: tvTransport, Timeout: cfg.OriginTimeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
