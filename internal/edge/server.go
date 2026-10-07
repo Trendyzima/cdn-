@@ -70,19 +70,19 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if !s.authorized(rel,r.URL.Query().Get("token")){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
  if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));s.serveEntry(w,r,e);return}
  stale,staleErr:=s.cache.GetStale(rel);s.misses.Add(1)
- data,err:=s.fetchCoalesced(rel)
+ ttl:=s.cfg.SegmentTTL;if strings.HasSuffix(strings.ToLower(rel),".m3u8"){ttl=s.cfg.ManifestTTL}
+ data,err:=s.fetchCoalesced(rel,ttl,s.cfg.StaleIfError)
  if err!=nil&&staleErr==nil{s.staleHits.Add(1);setType(w,rel);w.Header().Set("X-Cache","STALE");w.Header().Set("Cache-Status","testagram; stale-if-error");w.Header().Set("Warning","110 - Response is stale");w.Header().Set("Age",age(stale));s.serveEntry(w,r,stale);return}
  if err!=nil{http.Error(w,"upstream unavailable",502);return}
- ttl:=s.cfg.SegmentTTL;if strings.HasSuffix(strings.ToLower(rel),".m3u8"){ttl=s.cfg.ManifestTTL}
- if _,e:=s.cache.Put(rel,data,ttl,s.cfg.StaleIfError);e!=nil{log.Printf("cache put %s: %v",rel,e)}
  setType(w,rel);w.Header().Set("X-Cache","MISS");w.Header().Set("Cache-Status","testagram; fwd=uri-miss");w.Header().Set("ETag","\""+hash(data)+"\"");w.Header().Set("Cache-Control",cacheControl(rel));s.served.Add(uint64(len(data)));http.ServeContent(w,r,rel,time.Time{},bytesReader{b:data})
 }
 func(s *Server)serveEntry(w http.ResponseWriter,r *http.Request,e cache.Entry){if st,err:=os.Stat(e.Path);err==nil{s.served.Add(uint64(st.Size()))};http.ServeFile(w,r,e.Path)}
 
-func(s *Server)fetchCoalesced(key string)([]byte,error){
+func(s *Server)fetchCoalesced(key string,ttl,staleFor time.Duration)([]byte,error){
  s.mu.Lock();if f,ok:=s.fetching[key];ok{s.mu.Unlock();<-f.done;return f.data,f.err}
  f:=&fetch{done:make(chan struct{})};s.fetching[key]=f;s.mu.Unlock()
  s.inflight.Add(1);s.upstream.Add(1);f.data,f.err=s.fetchUpstream(key);s.inflight.Add(^uint64(0))
+ if f.err==nil{if _,e:=s.cache.Put(key,f.data,ttl,staleFor);e!=nil{log.Printf("cache put %s: %v",key,e)}}
  s.mu.Lock();close(f.done);delete(s.fetching,key);s.mu.Unlock();return f.data,f.err
 }
 
