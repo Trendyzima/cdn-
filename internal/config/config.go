@@ -6,6 +6,8 @@ type Config struct {
     ListenAddr string
     OriginURL string
     OriginURLs []string
+    PublicBaseURL string
+    MediaURLPrefix string
     ShieldURLs []string
     EdgeURLs []string
     OriginAuthToken string
@@ -35,6 +37,8 @@ func Load() Config {
         ListenAddr: env("LISTEN_ADDR",":8080"),
         OriginURL: strings.TrimRight(os.Getenv("ORIGIN_URL"),"/"),
         OriginURLs: split(os.Getenv("ORIGIN_URLS")),
+        PublicBaseURL: strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"),"/"),
+        MediaURLPrefix: env("MEDIA_URL_PREFIX","/media"),
         ShieldURLs: split(os.Getenv("SHIELD_URLS")),
         EdgeURLs: split(os.Getenv("EDGE_URLS")),
         OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
