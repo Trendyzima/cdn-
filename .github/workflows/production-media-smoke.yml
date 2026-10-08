@@ -1,0 +1,37 @@
+name: Production Media Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check CDN health
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 https://media.testagram.site/healthz > /tmp/health.json
+          grep -q '"ok":true' /tmp/health.json
+
+      - name: Check legacy post image delivery
+        run: |
+          set -euo pipefail
+          url='https://media.testagram.site/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
+          curl --fail --silent --show-error --max-time 20             -D /tmp/headers.txt -o /tmp/media.webp "$url"
+          grep -qi '^content-type: image/webp' /tmp/headers.txt
+          test "$(wc -c < /tmp/media.webp)" -gt 1000
+          grep -qi '^x-cache:' /tmp/headers.txt
+
+      - name: Check native v1 post image delivery
+        run: |
+          set -euo pipefail
+          url='https://media.testagram.site/v1/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
+          curl --fail --silent --show-error --max-time 20             -D /tmp/headers-v1.txt -o /tmp/media-v1.webp "$url"
+          grep -qi '^content-type: image/webp' /tmp/headers-v1.txt
+          test "$(wc -c < /tmp/media-v1.webp)" -gt 1000
