@@ -4,99 +4,86 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - "internal/**"
+      - "cloudflare/**"
+      - ".github/workflows/production-media-smoke.yml"
 
 permissions:
   contents: read
 
 jobs:
-  media:
-    runs-on: ubuntu-latest
+  ownership:
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Check CDN health
-        run: |
-          set -euo pipefail
-          set +e
-          curl --silent --show-error --max-time 15 -D /tmp/health.headers -o /tmp/health.json https://media.testagram.site/healthz
-          status=$?
-          set -e
-          echo "health curl exit=$status"
-          cat /tmp/health.headers || true
-          cat /tmp/health.json || true
-          # The media smoke below is authoritative; health endpoint naming may differ
-          # on an already-deployed node during rolling upgrades.
-          exit 0
-
       - name: Prove first-party Go CDN ownership
+        shell: bash
         run: |
           set -euo pipefail
-          curl --silent --show-error --max-time 15 -D /tmp/cdn-identity.headers -o /tmp/cdn-identity.body https://media.testagram.site/healthz
-          cat /tmp/cdn-identity.headers
-          grep -qi '^x-testagram-cdn: testagram-edge
-        run: |
-          set -euo pipefail
-          url='https://media.testagram.site/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
-          set +e
-          curl --silent --show-error --max-time 20 -D /tmp/headers.txt -o /tmp/media.webp "$url"
-          status=$?
-          set -e
-          echo "legacy curl exit=$status"
-          cat /tmp/headers.txt || true
-          if test -f /tmp/media.webp; then wc -c /tmp/media.webp; head -c 200 /tmp/media.webp | cat -v; fi
-          test "$status" -eq 0
-          grep -qi '^content-type: image/webp' /tmp/headers.txt
-          test "$(wc -c < /tmp/media.webp)" -gt 1000
-          grep -qi '^x-cache:' /tmp/headers.txt
+          curl --fail --silent --show-error --max-time 15 \
+            -D /tmp/health.headers -o /tmp/health.json \
+            https://media.testagram.site/healthz
+          cat /tmp/health.headers
+          cat /tmp/health.json
+          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/health.headers
+          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-10-08-go-edge-iptv-v1[[:space:]]*$' /tmp/health.headers
 
-      - name: Check native v1 post image delivery
+      - name: Verify CDN metrics endpoint
+        shell: bash
         run: |
           set -euo pipefail
-          url='https://media.testagram.site/v1/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
-          set +e
-          curl --silent --show-error --max-time 20 -D /tmp/headers-v1.txt -o /tmp/media-v1.webp "$url"
-          status=$?
-          set -e
-          echo "v1 curl exit=$status"
-          cat /tmp/headers-v1.txt || true
-          if test -f /tmp/media-v1.webp; then wc -c /tmp/media-v1.webp; head -c 200 /tmp/media-v1.webp | cat -v; fi
-          test "$status" -eq 0
-          grep -qi '^content-type: image/webp' /tmp/headers-v1.txt
-          test "$(wc -c < /tmp/media-v1.webp)" -gt 1000 /tmp/cdn-identity.headers || {
-            echo "::error::media.testagram.site is not terminating on the first-party Go CDN"
-            exit 1
-          }
-          grep -qi '^x-testagram-cdn-version:' /tmp/cdn-identity.headers || {
-            echo "::error::first-party Go CDN version marker is missing"
-            exit 1
-          }
+          curl --fail --silent --show-error --max-time 15 \
+            https://media.testagram.site/metrics > /tmp/metrics.txt
+          grep -q '^testagram_edge_tv_prefetch_success_total ' /tmp/metrics.txt
+          grep -q '^testagram_edge_tv_prefetch_failures_total ' /tmp/metrics.txt
+          grep -q '^testagram_edge_tv_prefetch_warmed_seconds_total ' /tmp/metrics.txt
 
-      - name: Check legacy post image delivery
+  e2e-iptv:
+    if: ${{ secrets.TESTAGRAM_E2E_SUPABASE_URL != '' && secrets.TESTAGRAM_E2E_SUPABASE_ANON_KEY != '' && secrets.TESTAGRAM_E2E_AUTH_TOKEN != '' && secrets.TESTAGRAM_E2E_STREAM_ID != '' && secrets.TESTAGRAM_E2E_SOURCE_URL != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Request signed IPTV playback URL
+        env:
+          SUPABASE_URL: ${{ secrets.TESTAGRAM_E2E_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.TESTAGRAM_E2E_SUPABASE_ANON_KEY }}
+          AUTH_TOKEN: ${{ secrets.TESTAGRAM_E2E_AUTH_TOKEN }}
+          STREAM_ID: ${{ secrets.TESTAGRAM_E2E_STREAM_ID }}
+          SOURCE_URL: ${{ secrets.TESTAGRAM_E2E_SOURCE_URL }}
+        shell: bash
         run: |
           set -euo pipefail
-          url='https://media.testagram.site/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
-          set +e
-          curl --silent --show-error --max-time 20 -D /tmp/headers.txt -o /tmp/media.webp "$url"
-          status=$?
-          set -e
-          echo "legacy curl exit=$status"
-          cat /tmp/headers.txt || true
-          if test -f /tmp/media.webp; then wc -c /tmp/media.webp; head -c 200 /tmp/media.webp | cat -v; fi
-          test "$status" -eq 0
-          grep -qi '^content-type: image/webp' /tmp/headers.txt
-          test "$(wc -c < /tmp/media.webp)" -gt 1000
-          grep -qi '^x-cache:' /tmp/headers.txt
+          response="$(curl --fail --silent --show-error --max-time 20 \
+            -X POST "\${SUPABASE_URL}/functions/v1/tv-cdn-playback" \
+            -H "apikey: \${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer \${AUTH_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "$(jq -cn --arg id "\${STREAM_ID}" --arg src "\${SOURCE_URL}" '{stream_id:$id,source_url:$src}')")"
+          echo "\${response}" | jq -e '.ok == true and (.data.playback_url | startswith("https://media.testagram.site/v1/tv/"))'
+          echo "\${response}" | jq -r '.data.playback_url' > /tmp/playback.url
 
-      - name: Check native v1 post image delivery
+      - name: Fetch signed playlist and verify rewritten CDN segments
+        shell: bash
         run: |
           set -euo pipefail
-          url='https://media.testagram.site/v1/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
-          set +e
-          curl --silent --show-error --max-time 20 -D /tmp/headers-v1.txt -o /tmp/media-v1.webp "$url"
-          status=$?
-          set -e
-          echo "v1 curl exit=$status"
-          cat /tmp/headers-v1.txt || true
-          if test -f /tmp/media-v1.webp; then wc -c /tmp/media-v1.webp; head -c 200 /tmp/media-v1.webp | cat -v; fi
-          test "$status" -eq 0
-          grep -qi '^content-type: image/webp' /tmp/headers-v1.txt
-          test "$(wc -c < /tmp/media-v1.webp)" -gt 1000
+          playlist="$(cat /tmp/playback.url)"
+          curl --fail --silent --show-error --max-time 20 "\${playlist}" -o /tmp/live.m3u8
+          grep -q '^#EXTM3U' /tmp/live.m3u8
+          grep -E -q '^/v1/tv/|https://media.testagram.site/v1/tv/' /tmp/live.m3u8
+          grep -q '#EXTINF:' /tmp/live.m3u8
+
+      - name: Verify warmed media path
+        shell: bash
+        run: |
+          set -euo pipefail
+          segment="$(grep -v '^#' /tmp/live.m3u8 | grep -E '\.ts([?#].*)?$|\.m4s([?#].*)?$|^/v1/tv/' | head -n1)"
+          test -n "\${segment}"
+          case "\${segment}" in
+            http*) url="\${segment}" ;;
+            /*) url="https://media.testagram.site\${segment}" ;;
+            *) url="https://media.testagram.site/v1/tv/\${segment}" ;;
+          esac
+          curl --fail --silent --show-error --max-time 20 -D /tmp/segment.headers -o /tmp/segment.bin "\${url}"
+          test "$(wc -c < /tmp/segment.bin)" -gt 0
+          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge' /tmp/segment.headers
