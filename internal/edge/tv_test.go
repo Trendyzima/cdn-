@@ -1,7 +1,7 @@
 package edge
 
 import (
-	"net/http"
+	"net/http"\n\t"time"\n\n\t"github.com/Trendyzima/cdn-/internal/config"
 	"net/url"
 	"strings"
 	"testing"
@@ -68,4 +68,10 @@ func TestTVCacheKeySeparatesUpstreamVariants(t *testing.T) {
   if tvCacheKey("channel", a, "seg.ts") == tvCacheKey("channel", b, "seg.ts") {
     t.Fatal("different upstream sources must not share an IPTV cache key")
   }
+}
+
+func TestTVPrefetchDefaults(t *testing.T) {
+  cfg := config.Load()
+  if cfg.TVPrefetchSeconds < 30*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
+  if cfg.TVPrefetchConcurrency < 1 || cfg.TVPrefetchConcurrency > 4 { t.Fatalf("TV prefetch concurrency must remain bounded: %d", cfg.TVPrefetchConcurrency) }
 }
