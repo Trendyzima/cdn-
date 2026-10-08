@@ -51,3 +51,21 @@ func TestTVRedirectRejectsPrivateTarget(t *testing.T) {
     t.Fatal("expected private/insecure TV redirect to be rejected")
   }
 }
+
+
+func TestTVCachePolicyProtectsLiveContinuity(t *testing.T) {
+  if got := tvCacheControl("tv/channel/segment.ts", false); !strings.Contains(got, "stale-if-error=120") {
+    t.Fatalf("segment cache policy must retain a recovery window: %s", got)
+  }
+  if got := tvCacheControl("tv/channel/index.m3u8", false); !strings.Contains(got, "max-age=0") {
+    t.Fatalf("live playlist must not become stale in the browser: %s", got)
+  }
+}
+
+func TestTVCacheKeySeparatesUpstreamVariants(t *testing.T) {
+  a, _ := url.Parse("https://source-a.example/live/seg.ts")
+  b, _ := url.Parse("https://source-b.example/live/seg.ts")
+  if tvCacheKey("channel", a, "seg.ts") == tvCacheKey("channel", b, "seg.ts") {
+    t.Fatal("different upstream sources must not share an IPTV cache key")
+  }
+}
