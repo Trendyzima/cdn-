@@ -74,7 +74,7 @@ func Load() Config {
         ManifestTTL: duration("MANIFEST_TTL",2*time.Second),
         StaleIfError: duration("STALE_IF_ERROR",120*time.Second),
         MaxSegmentBytes: integer("MAX_SEGMENT_BYTES",32<<20),
-        AllowedOrigins: split(os.Getenv("ALLOWED_ORIGINS")),
+        AllowedOrigins: allowedOrigins(),
         NodeID: env("NODE_ID","local"),
         RateLimitPerMin: int(integer("RATE_LIMIT_PER_MIN",1200)),
         RateLimitBurst: int(integer("RATE_LIMIT_BURST",300)),
@@ -89,3 +89,9 @@ func env(k,f string)string{if v:=os.Getenv(k);v!=""{return v};return f}
 func duration(k string,f time.Duration)time.Duration{if v:=os.Getenv(k);v!=""{if d,e:=time.ParseDuration(v);e==nil&&d>0{return d}};return f}
 func integer(k string,f int64)int64{if v:=os.Getenv(k);v!=""{if n,e:=strconv.ParseInt(v,10,64);e==nil&&n>0{return n}};return f}
 func split(v string)[]string{if v==""{return nil};p:=strings.Split(v,",");out:=make([]string,0,len(p));for _,x:=range p{if x=strings.TrimSpace(x);x!=""{out=append(out,strings.TrimRight(x,"/"))}};return out}
+
+func allowedOrigins() []string {
+    if v := os.Getenv("ALLOWED_ORIGINS"); v != "" { return split(v) }
+    // Browser HLS playback is intentionally limited to Testagram web origins by default.
+    return []string{"https://testagram.site", "https://www.testagram.site"}
+}
