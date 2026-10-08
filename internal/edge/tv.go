@@ -39,7 +39,7 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   fetchTarget := target
   if len(directives) > 0 { fetchTarget = cloneURLWithQuery(target,directives) }
 
-  cacheKey := "tv/"+scope+"/"+hashString(fetchTarget.String())+"/"+strings.Join(parts[2:],"/")
+  cacheKey := tvCacheKey(scope, fetchTarget, strings.Join(parts[2:],"/"))
   if e, data, err := s.cache.GetHot(cacheKey); err == nil {s.hits.Add(1);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("Content-Type",func()string{if strings.HasSuffix(strings.ToLower(rel),".m3u8"){return "application/vnd.apple.mpegurl; charset=utf-8"};return "application/octet-stream"}());w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0));w.Header().Set("ETag",etagFile(e));w.Header().Set("Age",age(e));if isPlaylistResponse(w.Header().Get("Content-Type"),data)&&len(data)>=512&&acceptsGzip(r){w.Header().Set("Content-Encoding","gzip");w.Header().Set("X-Accel-Buffering","no");gw,_:=gzip.NewWriterLevel(w,gzip.BestSpeed);w.WriteHeader(200);_,_=gw.Write(data);_=gw.Close();return};s.serveBytes(w,r,data);return};if e, err := s.cache.Get(cacheKey); err == nil {
     s.hits.Add(1); w.Header().Set("X-Cache","HIT"); w.Header().Set("Cache-Status","testagram; hit")
     setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(tvDeliveryDirectives(r.URL.Query(),strings.HasSuffix(strings.ToLower(target.Path),".m3u8")))>0)); w.Header().Set("ETag",etagFile(e)); w.Header().Set("Age",age(e)); if strings.HasSuffix(strings.ToLower(rel),".m3u8") { w.Header().Set("Vary","Accept-Encoding") }
@@ -84,6 +84,7 @@ func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string
   if f.err == nil {
     ttl := ttlForTV(s.cfg,rel)
     if _,e := s.cache.Put(key,f.data,ttl,s.cfg.StaleIfError); e != nil { f.err=e }
+    if f.err == nil && isHLSContent(target,f.contentType,f.data) { go s.prefetchTVSegments(scope,target,f.data) }
   }
   s.inflight.Add(^uint64(0))
   s.mu.Lock(); close(f.done); delete(s.tvFetching,key); s.mu.Unlock()
@@ -93,6 +94,35 @@ func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string
 func ttlForTV(cfg config.Config, rel string) time.Duration {
   if strings.HasSuffix(strings.ToLower(rel),".m3u8") { return cfg.ManifestTTL }
   return cfg.SegmentTTL
+}
+
+func tvCacheKey(scope string, target *url.URL, name string) string {
+  return "tv/" + scope + "/" + hashString(target.String()) + "/" + name
+}
+
+// Prefetch only the newest media segments advertised by a live playlist.
+// This turns the common "playlist arrives -> player immediately asks for segment"
+// sequence into a warm-cache hit without prefetching an entire rendition.
+func (s *Server) prefetchTVSegments(scope string, playlistURL *url.URL, data []byte) {
+  lines := strings.Split(string(data), "\n")
+  warmed := 0
+  for _, raw := range lines {
+    line := strings.TrimSpace(raw)
+    if line == "" || strings.HasPrefix(line, "#") { continue }
+    resolved, err := playlistURL.Parse(line)
+    if err != nil || resolved.Scheme != "https" || isPrivateHost(resolved.Hostname()) { continue }
+    lower := strings.ToLower(resolved.Path)
+    if !(strings.HasSuffix(lower, ".ts") || strings.HasSuffix(lower, ".m4s")) { continue }
+    name := path.Base(resolved.Path)
+    key := tvCacheKey(scope, resolved, name)
+    if _, err := s.cache.Get(key); err == nil { continue }
+    warmed++
+    go func(k string, target *url.URL, scope, name string) {
+      if warmed > 2 { return }
+      _, _, _ = s.fetchTVCoalesced(k, target, scope, name)
+    }(key, resolved, scope, name)
+    if warmed >= 2 { break }
+  }
 }
 
 func (s *Server) fetchTVSource(target *url.URL) ([]byte,string,error) {
@@ -194,7 +224,7 @@ func tvDeliveryDirectives(q url.Values,playlist bool) url.Values {
 func tvCacheControl(rel string,blocking bool)string {
   if strings.HasSuffix(strings.ToLower(rel),".m3u8") {
     if blocking { return "public, max-age=0, s-maxage=1, stale-while-revalidate=1, stale-if-error=6" }
-    return "public, max-age=1, s-maxage=1, stale-while-revalidate=1, stale-if-error=30"
+    return "public, max-age=0, s-maxage=1, stale-while-revalidate=2, stale-if-error=10"
   }
   return cacheControl(rel)
 }
