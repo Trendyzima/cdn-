@@ -32,6 +32,7 @@ type Server struct {
  client *http.Client
  tvClient *http.Client
  hits,misses,upstream,inflight,served,rejected,staleHits atomic.Uint64
+	tvPrefetchHits,tvPrefetchMisses,tvPrefetchSuccesses,tvPrefetchFailures,tvPrefetchWarmedSeconds atomic.Uint64
  mu sync.Mutex
  fetching map[string]*fetch
  originsMu sync.Mutex
