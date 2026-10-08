@@ -12,9 +12,5 @@ bucket_name = "testagram-media"
 pattern = "media.testagram.site/v1/*"
 zone_name = "testagram.site"
 
-[[routes]]
-pattern = "media.testagram.site/*"
-zone_name = "testagram.site"
-
 [observability]
 enabled = true
