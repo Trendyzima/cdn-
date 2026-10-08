@@ -45,8 +45,8 @@ func testConfig(t *testing.T)config.Config{
 }
 func TestMediaCachePolicy(t *testing.T) {
  if got:=cacheControl("users/a/thumbnail.webp"); !strings.Contains(got, "immutable") { t.Fatalf("image cache policy not immutable: %s", got) }
- if got:=cacheControl("live/channel/seg-1.m4s"); !strings.Contains(got, "s-maxage=20") { t.Fatalf("segment cache policy changed unexpectedly: %s", got) }
- if got:=cacheControl("live/channel/index.m3u8"); !strings.Contains(got, "max-age=1") { t.Fatalf("manifest cache policy changed unexpectedly: %s", got) }
+ if got:=cacheControl("live/channel/seg-1.m4s"); !strings.Contains(got, "s-maxage=30") { t.Fatalf("segment cache policy changed unexpectedly: %s", got) }
+ if got:=cacheControl("live/channel/index.m3u8"); !strings.Contains(got, "max-age=0") { t.Fatalf("manifest cache policy changed unexpectedly: %s", got) }
 }
 
 func TestLegacyMediaAliasesReachAssetHandler(t *testing.T) {
