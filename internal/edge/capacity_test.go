@@ -32,7 +32,7 @@ func TestCapacity500kLogicalViewers(t *testing.T) {
   OriginTimeout:time.Second,MaxIdleConns:4096,MaxIdleConnsPerHost:4096,
  }
  s:=New(cfg)
- h:=s.Handler()
+ h:=http.HandlerFunc(s.asset)
  const viewers=500000
  const workers=4096
  jobs:=make(chan struct{},workers)
