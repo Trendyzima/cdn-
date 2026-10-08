@@ -15,7 +15,7 @@ The CDN uses a two-tier local cache: a larger disk-backed cache for breadth and 
 | UPSTASH_LOCK_TTL | 8s | distributed coordination lease |
 | TRUST_CLOUDFLARE | 0 | use CF-Connecting-IP for rate limiting when behind Cloudflare |\n\n## Testagram provider compatibility
 
-The CDN is designed to sit behind Cloudflare rather than replace it. Cloudflare remains the public DNS/WAF/proxy boundary; this service is the media shield/cache and delivery layer. Set TRUST_CLOUDFLARE=1 only when the service is reachable exclusively through trusted Cloudflare proxying, so CF-Connecting-IP can be used for per-viewer rate limiting.
+This service is the first-party Testagram CDN and media delivery plane. Cloudflare is not required as the media CDN. If Cloudflare is used at all, it should be DNS-only or a separate control/security layer; public media requests must terminate on the Go CDN nodes. Set TRUST_CLOUDFLARE=1 only when the service is reachable exclusively through trusted Cloudflare proxying, so CF-Connecting-IP can be used for per-viewer rate limiting.
 
 Cloudinary can be the media origin for image/video assets. Configure CLOUDINARY_CLOUD_NAME for conventional Cloudinary delivery URLs, or provide explicit CLOUDINARY_IMAGE_BASE_URL / CLOUDINARY_VIDEO_BASE_URL when Testagram uses custom delivery/transformation paths. The CDN caches the returned bytes; Cloudinary remains responsible for its asset/transformation layer.
 
@@ -23,7 +23,7 @@ Upstash Redis is intentionally optional and is treated as a control-plane servic
 
 Recommended production flow:
 
-Viewer -> Cloudflare DNS/WAF/proxy -> Testagram Edge CDN -> local hot/disk cache -> Cloudinary or Testagram origin
+Viewer -> Testagram Edge CDN -> local hot/disk cache -> shield -> R2/Cloudinary/authenticated origin
 
 Application metadata/auth -> Testagram backend/Supabase
 
@@ -46,3 +46,19 @@ Keep binary storage at the authenticated origin/object store; this service is th
 ## Capacity verification\n\nNormal CI runs the full correctness suite, race detector and vet. The 100k logical-viewer test is deliberately opt-in:\n\nCAPACITY_TEST=1 go test ./internal/edge -run TestCapacity100kLogicalViewers -count=1 -timeout 10m\n\nIt verifies that 100,000 concurrent logical viewers can request the same uncached segment through the in-process data plane while the origin sees only one fetch. This is a fan-out correctness test, not proof of 100,000 real Internet viewers.\n\nFor real capacity certification, run staged external tests against deployed nodes:\n\n- 1,000 viewers\n- 5,000 viewers\n- 10,000 viewers\n- 25,000 viewers\n- 50,000 viewers\n- 100,000 viewers\n\nEach stage must record p50/p95/p99 latency, HTTP error rate, rebuffer/stall rate, edge egress, origin egress, origin request rate, cache hit ratio, CPU, memory, open connections and network saturation. Do not promote a stage if any SLO regresses.\n\n## Cost boundary\n\nThe software can remain open-source and free. Public bandwidth, compute, IP transit and always-on machines are physical resources and cannot honestly be promised as unlimited/free forever.\n\nGitHub documents that standard GitHub-hosted runners are free for public repositories, but they are temporary CI machines rather than persistent video-serving nodes. GitHub also imposes workflow/job limits, so CI must remain build/test automation rather than the CDN transport layer.\n\nThe real target is:\n\n- no mandatory CDN vendor fee\n- no per-video-request edge-function dependency\n- aggressive cache reuse\n- shielded origins\n- optional P2P offload\n- independently deployable edge nodes\n\n## Production rule\n\nDo not expose the origin directly to public viewers once the CDN is integrated.\n\nPublic path:\n\nviewer -> edge -> cache -> shield -> authenticated origin\n\nNever:\n\nviewer -> origin
 
 <!-- CI verification marker: current main is continuously verified by GitHub Actions. -->
+
+
+## IPTV continuity profile
+
+The default production profile is deliberately light enough for small edge nodes while protecting live playback:
+
+- 8 GiB disk cache and 512 MiB hot RAM cache by default; both are bounded.
+- 2,048 global idle upstream connections, 256 idle connections per host and a 512 per-host connection ceiling.
+- Live playlists are short-lived so viewers discover new segments quickly.
+- Media segments receive a longer stale recovery window so a brief origin/R2 outage does not immediately interrupt playback.
+- The edge coalesces concurrent requests for the same live object.
+- After a live playlist is cached, the edge asynchronously warms up to two newest `.ts`/`.m4s` segments.
+- HLS playlist and segment delivery stays on the Go CDN data plane; IPTV bytes are not routed through Supabase Edge Functions.
+- The player-facing path is the Go CDN contract: media.testagram.site/v1/tv/....
+
+HLS requires segments referenced by a live playlist to remain available long enough to avoid interrupting playback, and clients are expected to load segments ahead of their presentation time. The CDN therefore treats the playlist as control-plane metadata and segments as durable short-lived data-plane objects.
