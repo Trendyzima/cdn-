@@ -1,9 +1,6 @@
 package edge
 
 import (
- "crypto/hmac"
- "crypto/sha256"
- "encoding/hex"
  "net/http/httptest"
  "testing"
  "time"
@@ -39,11 +36,6 @@ func testConfig(t *testing.T)config.Config{
   PlaybackSecret:"secret",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,
  }
 }
-func signToken(rel,secret,exp string)string{
- mac:=hmac.New(sha256.New,[]byte(secret));_,_=mac.Write([]byte(rel+"|"+exp))
- return exp+"."+hex.EncodeToString(mac.Sum(nil))
-}
-
 func TestMediaCachePolicy(t *testing.T) {
  if got:=cacheControl("users/a/thumbnail.webp"); !strings.Contains(got, "immutable") { t.Fatalf("image cache policy not immutable: %s", got) }
  if got:=cacheControl("live/channel/seg-1.m4s"); !strings.Contains(got, "s-maxage=20") { t.Fatalf("segment cache policy changed unexpectedly: %s", got) }
