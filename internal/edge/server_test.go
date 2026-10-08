@@ -7,6 +7,7 @@ import (
  "net/http/httptest"
  "testing"
  "time"
+ "strings"
  "github.com/Trendyzima/cdn-/internal/config"
 )
 
@@ -41,4 +42,10 @@ func testConfig(t *testing.T)config.Config{
 func signToken(rel,secret,exp string)string{
  mac:=hmac.New(sha256.New,[]byte(secret));_,_=mac.Write([]byte(rel+"|"+exp))
  return exp+"."+hex.EncodeToString(mac.Sum(nil))
+}
+
+func TestMediaCachePolicy(t *testing.T) {
+ if got:=cacheControl("users/a/thumbnail.webp"); !strings.Contains(got, "immutable") { t.Fatalf("image cache policy not immutable: %s", got) }
+ if got:=cacheControl("live/channel/seg-1.m4s"); !strings.Contains(got, "s-maxage=20") { t.Fatalf("segment cache policy changed unexpectedly: %s", got) }
+ if got:=cacheControl("live/channel/index.m3u8"); !strings.Contains(got, "max-age=1") { t.Fatalf("manifest cache policy changed unexpectedly: %s", got) }
 }
