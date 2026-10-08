@@ -131,13 +131,13 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if r.Method!=http.MethodGet&&r.Method!=http.MethodHead{http.Error(w,"method not allowed",405);return}
  rel,ok:=cleanAssetPath(r.URL.Path);if !ok{s.rejected.Add(1);http.Error(w,"invalid path",400);return}
  if !s.authorized(rel,r.URL.Query().Get("token")){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
- if e,data,err:=s.cache.GetHot(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveBytes(w,r,data);return};if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveEntry(w,r,e);return}
+ if e,data,err:=s.cache.GetHot(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.serveBytes(w,r,data);return};if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.serveEntry(w,r,e);return}
  stale,staleErr:=s.cache.GetStale(rel);s.misses.Add(1)
  ttl:=s.cfg.SegmentTTL;if strings.HasSuffix(strings.ToLower(rel),".m3u8"){ttl=s.cfg.ManifestTTL}
  data,err:=s.fetchCoalesced(rel,ttl,s.cfg.StaleIfError)
  if err!=nil&&staleErr==nil{s.staleHits.Add(1);setType(w,rel);w.Header().Set("X-Cache","STALE");w.Header().Set("Cache-Status","testagram; stale-if-error");w.Header().Set("Warning","110 - Response is stale");w.Header().Set("Age",age(stale));s.serveEntry(w,r,stale);return}
  if err!=nil{http.Error(w,"upstream unavailable",502);return}
- setType(w,rel);w.Header().Set("X-Cache","MISS");w.Header().Set("Cache-Status","testagram; fwd=uri-miss");w.Header().Set("ETag","\""+hash(data)+"\"");w.Header().Set("Cache-Control",cacheControl(rel));s.served.Add(uint64(len(data)));http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
+ setType(w,rel);w.Header().Set("X-Cache","MISS");w.Header().Set("Cache-Status","testagram; fwd=uri-miss");w.Header().Set("ETag","\""+hash(data)+"\"");w.Header().Set("Cache-Control",cacheControl(rel)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.served.Add(uint64(len(data)));http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
 }
 func(s *Server)serveBytes(w http.ResponseWriter,r *http.Request,data []byte){http.ServeContent(w,r,"hot",time.Time{},bytes.NewReader(data))}
 
@@ -245,6 +245,7 @@ func setType(w http.ResponseWriter,rel string){
  default:w.Header().Set("Content-Type","application/octet-stream")
  }
 }
+func isLiveMedia(rel string) bool { l:=strings.ToLower(rel); return strings.HasSuffix(l,".m3u8")||strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s") }
 func cacheControl(rel string)string{
  l:=strings.ToLower(rel)
  if strings.HasSuffix(l,".m3u8"){return "public, max-age=1, s-maxage=1, stale-while-revalidate=2, stale-if-error=30"}
