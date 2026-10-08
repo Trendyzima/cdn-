@@ -173,8 +173,40 @@ func(s *Server)rateLimit(next http.Handler)http.Handler{return http.HandlerFunc(
 
 func dedupe(in []string)[]string{seen:=map[string]bool{};out:=[]string{};for _,x:=range in{if x!=""&&!seen[x]{seen[x]=true;out=append(out,x)}};return out}
 func cleanAssetPath(p string)(string,bool){p=strings.TrimPrefix(p,"/v1/");if p==""||strings.Contains(p,"\\"){return "",false};for _,segment:=range strings.Split(p,"/"){if segment==".."{return "",false}};c:=path.Clean("/"+p);if c=="/"||strings.HasPrefix(c,"/../"){return "",false};return strings.TrimPrefix(c,"/"),true}
-func setType(w http.ResponseWriter,rel string){l:=strings.ToLower(rel);switch{case strings.HasSuffix(l,".m3u8"):w.Header().Set("Content-Type","application/vnd.apple.mpegurl");case strings.HasSuffix(l,".ts"):w.Header().Set("Content-Type","video/mp2t");case strings.HasSuffix(l,".m4s"):w.Header().Set("Content-Type","video/iso.segment");case strings.HasSuffix(l,".mp4"):w.Header().Set("Content-Type","video/mp4");case strings.HasSuffix(l,".aac"):w.Header().Set("Content-Type","audio/aac");case strings.HasSuffix(l,".mp3"):w.Header().Set("Content-Type","audio/mpeg");case strings.HasSuffix(l,".vtt"):w.Header().Set("Content-Type","text/vtt");default:w.Header().Set("Content-Type","application/octet-stream")}}
-func cacheControl(rel string)string{if strings.HasSuffix(strings.ToLower(rel),".m3u8"){return "public, max-age=1, s-maxage=1, stale-while-revalidate=2, stale-if-error=30"};return "public, max-age=15, s-maxage=20, stale-while-revalidate=30, stale-if-error=30"}
+func setType(w http.ResponseWriter,rel string){
+ l:=strings.ToLower(rel)
+ switch{
+ case strings.HasSuffix(l,".m3u8"):w.Header().Set("Content-Type","application/vnd.apple.mpegurl")
+ case strings.HasSuffix(l,".ts"):w.Header().Set("Content-Type","video/mp2t")
+ case strings.HasSuffix(l,".m4s"):w.Header().Set("Content-Type","video/iso.segment")
+ case strings.HasSuffix(l,".mp4"):w.Header().Set("Content-Type","video/mp4")
+ case strings.HasSuffix(l,".webm"):w.Header().Set("Content-Type","video/webm")
+ case strings.HasSuffix(l,".mov"):w.Header().Set("Content-Type","video/quicktime")
+ case strings.HasSuffix(l,".aac"):w.Header().Set("Content-Type","audio/aac")
+ case strings.HasSuffix(l,".mp3"):w.Header().Set("Content-Type","audio/mpeg")
+ case strings.HasSuffix(l,".wav"):w.Header().Set("Content-Type","audio/wav")
+ case strings.HasSuffix(l,".vtt"):w.Header().Set("Content-Type","text/vtt")
+ case strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg"):w.Header().Set("Content-Type","image/jpeg")
+ case strings.HasSuffix(l,".png"):w.Header().Set("Content-Type","image/png")
+ case strings.HasSuffix(l,".webp"):w.Header().Set("Content-Type","image/webp")
+ case strings.HasSuffix(l,".avif"):w.Header().Set("Content-Type","image/avif")
+ case strings.HasSuffix(l,".gif"):w.Header().Set("Content-Type","image/gif")
+ case strings.HasSuffix(l,".svg"):w.Header().Set("Content-Type","image/svg+xml")
+ default:w.Header().Set("Content-Type","application/octet-stream")
+ }
+}
+func cacheControl(rel string)string{
+ l:=strings.ToLower(rel)
+ if strings.HasSuffix(l,".m3u8"){return "public, max-age=1, s-maxage=1, stale-while-revalidate=2, stale-if-error=30"}
+ if strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s"){return "public, max-age=15, s-maxage=20, stale-while-revalidate=30, stale-if-error=30"}
+ if strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif"){
+  return "public, max-age=31536000, s-maxage=31536000, immutable, stale-if-error=86400"
+ }
+ if strings.HasSuffix(l,".mp4")||strings.HasSuffix(l,".webm")||strings.HasSuffix(l,".mov")||strings.HasSuffix(l,".mp3")||strings.HasSuffix(l,".aac")||strings.HasSuffix(l,".wav"){
+  return "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400, stale-if-error=86400"
+ }
+ return "public, max-age=15, s-maxage=20, stale-while-revalidate=30, stale-if-error=30"
+}
 func etagFile(e cache.Entry)string{return "\""+fmt.Sprintf("%x-%x",e.Size,e.CreatedAt.UnixNano())+"\""}
 func hash(b []byte)string{h:=sha256.Sum256(b);return hex.EncodeToString(h[:])[:16]}
 func age(e cache.Entry)string{a:=time.Since(e.CreatedAt);if a<0{return "0"};return strconv.FormatInt(int64(a/time.Second),10)}
