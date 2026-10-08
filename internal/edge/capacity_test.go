@@ -12,10 +12,10 @@ import (
  "github.com/Trendyzima/cdn-/internal/config"
 )
 
-// CAPACITY_TEST=1 enables the 100k logical-viewer test. It is intentionally
+// CAPACITY_TEST=1 enables the 500k logical-viewer test. It is intentionally
 // opt-in because CI runners are verification machines, not production load generators.
-func TestCapacity100kLogicalViewers(t *testing.T) {
- if os.Getenv("CAPACITY_TEST") != "1" { t.Skip("set CAPACITY_TEST=1 to run the 100k capacity test") }
+func TestCapacity500kLogicalViewers(t *testing.T) {
+ if os.Getenv("CAPACITY_TEST") != "1" { t.Skip("set CAPACITY_TEST=1 to run the 500k capacity test") }
 
  var originCalls atomic.Int64
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
@@ -28,13 +28,13 @@ func TestCapacity100kLogicalViewers(t *testing.T) {
  cfg:=config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:64<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
   StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},
-  NodeID:"capacity-test",RateLimitPerMin:1000000,RateLimitBurst:100000,
+  NodeID:"capacity-test",RateLimitPerMin:0,RateLimitBurst:0,
   OriginTimeout:time.Second,MaxIdleConns:4096,MaxIdleConnsPerHost:4096,
  }
  s:=New(cfg)
- h:=s.Handler()
- const viewers=100000
- const workers=2048
+ h:=http.HandlerFunc(s.asset)
+ const viewers=500000
+ const workers=4096
  jobs:=make(chan struct{},workers)
  var wg sync.WaitGroup
  var ok atomic.Int64
@@ -54,6 +54,6 @@ func TestCapacity100kLogicalViewers(t *testing.T) {
  for i:=0;i<viewers;i++{jobs<-struct{}{}}
  close(jobs)
  wg.Wait()
- if got:=ok.Load();got!=viewers{t.Fatalf("100k logical viewer simulation: %d/%d succeeded; first failure HTTP status=%d; failures=%d",got,viewers,firstFailure.Load(),failures.Load())}
+ if got:=ok.Load();got!=viewers{t.Fatalf("500k logical viewer simulation: %d/%d succeeded; first failure HTTP status=%d; failures=%d",got,viewers,firstFailure.Load(),failures.Load())}
  if got:=originCalls.Load();got!=1{t.Fatalf("cache fanout regression: expected 1 origin fetch, got %d",got)}
 }
