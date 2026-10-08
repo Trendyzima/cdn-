@@ -151,7 +151,7 @@ func (s *Server) prefetchTVSegments(scope string, playlistURL *url.URL, data []b
 	limit := s.cfg.TVPrefetchConcurrency
 	if limit < 1 { limit = 1 }
 	if limit > 4 { limit = 4 }
-	warmupCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	warmupCtx, cancel := context.WithTimeout(context.Background(), s.cfg.TVPrefetchTimeout)
 	defer cancel()
 
 	jobs := make(chan struct { target *url.URL; key, name string; duration time.Duration })
@@ -179,8 +179,8 @@ func (s *Server) prefetchTVSegments(scope string, playlistURL *url.URL, data []b
 						s.tvPrefetchWarmedSeconds.Add(uint64(item.duration / time.Second))
 					}
 				}
-			}()
-	}
+			}
+		}()
 	}
 send:
 	for _, item := range candidates {
