@@ -61,7 +61,7 @@ func Load() Config {
         CacheDir: env("CACHE_DIR","./cache"),
         CacheTTL: duration("CACHE_TTL",30*time.Second),
         MaxCacheBytes: integer("MAX_CACHE_BYTES",64<<30),
-        HotCacheBytes: integer("HOT_CACHE_BYTES",32<<30),
+        HotCacheBytes: integer("HOT_CACHE_BYTES",48<<30),
         SegmentTTL: duration("SEGMENT_TTL",30*time.Second),
         ManifestTTL: duration("MANIFEST_TTL",2*time.Second),
         StaleIfError: duration("STALE_IF_ERROR",60*time.Second),
