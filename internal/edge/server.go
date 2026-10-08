@@ -194,7 +194,7 @@ func(s *Server)fetchCloudinary(rel string)([]byte,bool){
  l:=strings.ToLower(rel)
  if strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif")||strings.HasSuffix(l,".svg"){base=s.cfg.CloudinaryImageBaseURL}
  if strings.HasSuffix(l,".mp4")||strings.HasSuffix(l,".webm")||strings.HasSuffix(l,".mov")||strings.HasSuffix(l,".m3u8")||strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s")||strings.HasSuffix(l,".mp3")||strings.HasSuffix(l,".aac"){base=s.cfg.CloudinaryVideoBaseURL}
- if base==""&&s.cfg.CloudinaryCloudName!=""{if strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif")||strings.HasSuffix(l,".svg"){base="https://res.cloudinary.com/"+url.PathEscape(s.cfg.CloudinaryCloudName)+"/image/upload"}else{base="https://res.cloudinary.com/"+url.PathEscape(s.cfg.CloudinaryCloudName)+"/video/upload"}}
+ if base==""&&s.cfg.CloudinaryCloudName!=""&&(strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif")||strings.HasSuffix(l,".svg")){base="https://res.cloudinary.com/"+url.PathEscape(s.cfg.CloudinaryCloudName)+"/image/upload"}
  if base==""{return nil,false}
  u:=strings.TrimRight(base,"/")+"/"+strings.TrimPrefix(rel,"/")
  req,e:=http.NewRequest(http.MethodGet,u,nil);if e!=nil{return nil,false}
