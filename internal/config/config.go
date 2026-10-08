@@ -46,7 +46,7 @@ func Load() Config {
         OriginURL: strings.TrimRight(os.Getenv("ORIGIN_URL"),"/"),
         OriginURLs: split(os.Getenv("ORIGIN_URLS")),
         PublicBaseURL: strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"),"/"),
-        MediaURLPrefix: env("MEDIA_URL_PREFIX","/media"),
+        MediaURLPrefix: env("MEDIA_URL_PREFIX","/v1"),
         CloudinaryCloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"),
         CloudinaryImageBaseURL: strings.TrimRight(os.Getenv("CLOUDINARY_IMAGE_BASE_URL"),"/"),
         CloudinaryVideoBaseURL: strings.TrimRight(os.Getenv("CLOUDINARY_VIDEO_BASE_URL"),"/"),
