@@ -28,7 +28,7 @@ func TestCapacity500kLogicalViewers(t *testing.T) {
  cfg:=config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:64<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
   StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},
-  NodeID:"capacity-test",RateLimitPerMin:1000000,RateLimitBurst:100000,
+  NodeID:"capacity-test",RateLimitPerMin:60000000,RateLimitBurst:500000,
   OriginTimeout:time.Second,MaxIdleConns:4096,MaxIdleConnsPerHost:4096,
  }
  s:=New(cfg)
