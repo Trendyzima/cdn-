@@ -104,7 +104,7 @@ func TestTVSelfContainedIPTV(t *testing.T) {
 		switch r.URL.Path {
 		case "/live/index.m3u8":
 			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:6.0,\nseg001\n#EXTINF:6.0,\nseg002\n#EXTINF:6.0,\nseg003\n#EXTINF:6.0,\nseg004\n#EXTINF:6.0,\nseg005\n#EXTINF:6.0,\nseg006\n#EXTINF:6.0,\nseg007\n#EXTINF:6.0,\nseg008\n")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:6.0,\nseg001\n#EXTINF:6.0,\nseg002\n#EXTINF:6.0,\nseg003\n#EXTINF:6.0,\nseg004\n#EXTINF:6.0,\nseg005\n#EXTINF:6.0,\nseg006\n#EXTINF:6.0,\nseg007\n#EXTINF:6.0,\nseg008\n"))
 		default:
 			w.Header().Set("Content-Type", "video/mp2t")
 			_, _ = w.Write([]byte("segment-bytes"))
