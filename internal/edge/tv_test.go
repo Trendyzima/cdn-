@@ -73,17 +73,24 @@ func TestTVCacheKeySeparatesUpstreamVariants(t *testing.T) {
   }
 }
 
-func TestTVPrefetchParsesThirtySecondsAndExtensionlessSegments(t *testing.T) {
+func TestTVPrefetchParsesRealHLSPlaylistAndThirtySeconds(t *testing.T) {
 	base, _ := url.Parse("https://origin.example/live/index.m3u8")
-	playlist := []byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg001\n#EXTINF:6.0,\nseg002.ts\n#EXTINF:6.0,\nseg003\n#EXTINF:6.0,\nseg004.m4s\n#EXTINF:6.0,\nseg005\n")
+	playlist := []byte("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:100\n#EXT-X-PROGRAM-DATE-TIME:2026-10-08T09:00:00Z\n#EXTINF:6.0,\nseg001\n#EXTINF:6.0,\nseg002.ts\n#EXTINF:6.0,\nseg003\n#EXT-X-DISCONTINUITY\n#EXTINF:6.0,\nseg004.m4s\n#EXTINF:6.0,\nseg005\n")
 	candidates := parseTVPrefetchCandidates("channel-1", base, playlist, 30*time.Second)
-	if len(candidates) != 5 { t.Fatalf("expected 5 advertised segments for a 30s window, got %d", len(candidates)) }
+	if len(candidates) != 5 { t.Fatalf("expected 5 advertised media segments for a 30s window, got %d", len(candidates)) }
 	var total time.Duration
 	for _, candidate := range candidates { total += candidate.duration }
 	if total < 30*time.Second { t.Fatalf("expected at least 30s of advertised media, got %s", total) }
 	if candidates[0].name != "seg001" || candidates[2].name != "seg003" || candidates[4].name != "seg005" {
 		t.Fatalf("extensionless HLS media URI was not accepted: %#v", candidates)
 	}
+}
+
+func TestTVPrefetchDoesNotTreatVariantPlaylistAsMedia(t *testing.T) {
+	base, _ := url.Parse("https://origin.example/live/master.m3u8")
+	playlist := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nvariant-one\n#EXT-X-STREAM-INF:BANDWIDTH=1600000\nvariant-two.m3u8\n")
+	candidates := parseTVPrefetchCandidates("channel-1", base, playlist, 30*time.Second)
+	if len(candidates) != 0 { t.Fatalf("master playlist variant URIs must not be prefetched as media: %#v", candidates) }
 }
 
 func TestTVPrefetchDefaults(t *testing.T) {
