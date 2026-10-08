@@ -5,12 +5,19 @@ services:
       - "8080:8080"
     environment:
       LISTEN_ADDR: ":8080"
+      PUBLIC_BASE_URL: "https://media.testagram.site"
+      MEDIA_URL_PREFIX: "/v1"
       ORIGIN_URL: "http://host.docker.internal:9000"
       CACHE_DIR: "/app/cache"
-      SEGMENT_TTL: "20s"
+      SEGMENT_TTL: "30s"
       MANIFEST_TTL: "2s"
-      MAX_CACHE_BYTES: "2147483648"
-      MAX_SEGMENT_BYTES: "16777216"
+      STALE_IF_ERROR: "120s"
+      TV_PREFETCH_SECONDS: "45s"
+      TV_PREFETCH_CONCURRENCY: "4"
+      TV_PREFETCH_TIMEOUT: "12s"
+      MAX_CACHE_BYTES: "8589934592"
+      HOT_CACHE_BYTES: "536870912"
+      MAX_SEGMENT_BYTES: "33554432"
       NODE_ID: "local-edge"
     volumes:
       - edge-cache:/app/cache
