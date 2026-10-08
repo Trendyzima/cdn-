@@ -106,63 +106,91 @@ func tvCacheKey(scope string, target *url.URL, name string) string {
 // segments to cover the configured window (45s by default), then continue warming
 // on each playlist refresh. The playlist itself stays short-lived and is never
 // cached for the duration of the media window.
-func (s *Server) prefetchTVSegments(scope string, playlistURL *url.URL, data []byte) {
-  type candidate struct { target *url.URL; key, name string; duration time.Duration }
-  lines := strings.Split(string(data), "\\n")
-  candidates := make([]candidate, 0, 16)
-  var duration time.Duration
-  var total time.Duration
-
-  for _, raw := range lines {
-    line := strings.TrimSpace(raw)
-    if line == "" { continue }
-    if strings.HasPrefix(line, "#EXTINF:") {
-      value := strings.TrimPrefix(line, "#EXTINF:")
-      if comma := strings.IndexByte(value, ','); comma >= 0 { value = value[:comma] }
-      if seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil && seconds > 0 && seconds < 120 {
-        duration = time.Duration(seconds * float64(time.Second))
-      } else { duration = 0 }
-      continue
-    }
-    if strings.HasPrefix(line, "#") { continue }
-    resolved, err := playlistURL.Parse(line)
-    if err != nil || resolved.Scheme != "https" || isPrivateHost(resolved.Hostname()) { duration = 0; continue }
-    lower := strings.ToLower(resolved.Path)
-    if !(strings.HasSuffix(lower, ".ts") || strings.HasSuffix(lower, ".m4s")) { duration = 0; continue }
-    name := path.Base(resolved.Path)
-    candidates = append(candidates, candidate{target: resolved, key: tvCacheKey(scope, resolved, name), name: name, duration: duration})
-    if duration > 0 { total += duration }
-    duration = 0
-    if total >= s.cfg.TVPrefetchSeconds { break }
-  }
-
-  if len(candidates) == 0 || s.cfg.TVPrefetchSeconds <= 0 { return }
-
-  // Startup is deliberately gated on warming the advertised window. This adds
-  // initial startup latency but prevents the visible "play -> load -> play"
-  // pattern on slow/variable upstreams.
-  limit := s.cfg.TVPrefetchConcurrency
-  if limit < 1 { limit = 1 }
-  if limit > 4 { limit = 4 }
-  jobs := make(chan candidate)
-  var wg sync.WaitGroup
-  workers := limit
-  if len(candidates) < workers { workers = len(candidates) }
-  for i := 0; i < workers; i++ {
-    wg.Add(1)
-    go func() {
-      defer wg.Done()
-      for item := range jobs {
-        if _, err := s.cache.Get(item.key); err == nil { continue }
-        _, _, _ = s.fetchTVCoalesced(item.key, item.target, scope, item.name)
-      }
-    }()
-  }
-  for _, item := range candidates { jobs <- item }
-  close(jobs)
-  wg.Wait()
+func parseTVPrefetchCandidates(scope string, playlistURL *url.URL, data []byte, target time.Duration) []struct { target *url.URL; key, name string; duration time.Duration } {
+	lines := strings.Split(string(data), "\n")
+	out := make([]struct { target *url.URL; key, name string; duration time.Duration }, 0, 16)
+	var duration, total time.Duration
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#EXT-X-MAP:") && strings.Contains(line, "URI=") {
+			if strings.HasPrefix(line, "#EXT-X-MAP:") { duration = 0 }
+			continue
+		}
+		if strings.HasPrefix(line, "#EXTINF:") {
+			value := strings.TrimPrefix(line, "#EXTINF:")
+			if comma := strings.IndexByte(value, ','); comma >= 0 { value = value[:comma] }
+			if seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil && seconds > 0 && seconds < 120 {
+				duration = time.Duration(seconds * float64(time.Second))
+			} else { duration = 0 }
+			continue
+		}
+		if strings.HasPrefix(line, "#") { continue }
+		resolved, err := playlistURL.Parse(line)
+		if err != nil || resolved.Scheme != "https" || isPrivateHost(resolved.Hostname()) { duration = 0; continue }
+		name := path.Base(resolved.Path)
+		if name == "." || name == "/" || name == "" { name = "segment" }
+		lower := strings.ToLower(resolved.Path)
+		// HLS media URIs are not required to carry .ts/.m4s extensions. Exclude
+		// playlists by path/content convention, but allow extensionless segments.
+		if strings.HasSuffix(lower, ".m3u8") || strings.HasSuffix(lower, ".mpd") { duration = 0; continue }
+		out = append(out, struct { target *url.URL; key, name string; duration time.Duration }{
+			target: resolved, key: tvCacheKey(scope, resolved, name), name: name, duration: duration,
+		})
+		if duration > 0 { total += duration }
+		duration = 0
+		if target > 0 && total >= target { break }
+	}
+	return out
 }
 
+func (s *Server) prefetchTVSegments(scope string, playlistURL *url.URL, data []byte) {
+	if s.cfg.TVPrefetchSeconds <= 0 { return }
+	candidates := parseTVPrefetchCandidates(scope, playlistURL, data, s.cfg.TVPrefetchSeconds)
+	if len(candidates) == 0 { return }
+
+	limit := s.cfg.TVPrefetchConcurrency
+	if limit < 1 { limit = 1 }
+	if limit > 4 { limit = 4 }
+	warmupCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+
+	jobs := make(chan struct { target *url.URL; key, name string; duration time.Duration })
+	var wg sync.WaitGroup
+	workers := limit
+	if len(candidates) < workers { workers = len(candidates) }
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-warmupCtx.Done(): return
+				case item, ok := <-jobs:
+					if !ok { return }
+					if _, err := s.cache.Get(item.key); err == nil {
+						s.tvPrefetchHits.Add(1)
+						continue
+					}
+					s.tvPrefetchMisses.Add(1)
+					if _, _, err := s.fetchTVCoalesced(item.key, item.target, scope, item.name); err != nil {
+						s.tvPrefetchFailures.Add(1)
+					} else {
+						s.tvPrefetchSuccesses.Add(1)
+						s.tvPrefetchWarmedSeconds.Add(uint64(item.duration / time.Second))
+					}
+				}
+			}()
+	}
+send:
+	for _, item := range candidates {
+		select {
+		case <-warmupCtx.Done(): break send
+		case jobs <- item:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+}
 func (s *Server) fetchTVSource(target *url.URL) ([]byte,string,error) {
   req,err := http.NewRequest(http.MethodGet,target.String(),nil); if err != nil { return nil,"",err }
   req.Header.Set("User-Agent","TestagramEdge/2.0")
