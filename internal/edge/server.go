@@ -168,6 +168,7 @@ func(s *Server)fetchCoalesced(key string,ttl,staleFor time.Duration)([]byte,erro
 
 func(s *Server)fetchUpstream(rel string)([]byte,error){
  if data,ok:=s.fetchCloudinary(rel);ok{return data,nil}
+ if data,ok:=s.fetchR2(rel);ok{return data,nil}
  bases:=append([]string{},s.cfg.ShieldURLs...);bases=append(bases,s.cfg.OriginURLs...)
  var lastErr error
  for _,baseURL:=range bases{
@@ -188,6 +189,16 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
  }
  if lastErr==nil{lastErr=fmt.Errorf("all upstreams unavailable")}
  return nil,lastErr
+}
+
+func(s *Server)fetchR2(rel string)([]byte,bool){
+ if s.cfg.R2PublicBaseURL=="" { return nil,false }
+ u:=strings.TrimRight(s.cfg.R2PublicBaseURL,"/")+"/"+strings.TrimPrefix(rel,"/")
+ req,e:=http.NewRequest(http.MethodGet,u,nil); if e!=nil{return nil,false}
+ resp,e:=s.client.Do(req); if e!=nil||resp==nil{return nil,false}; defer resp.Body.Close()
+ if resp.StatusCode<200||resp.StatusCode>=300{return nil,false}
+ data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1)); if e!=nil||int64(len(data))>s.cfg.MaxSegmentBytes{return nil,false}
+ return data,true
 }
 
 func(s *Server)fetchCloudinary(rel string)([]byte,bool){
