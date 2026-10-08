@@ -73,6 +73,19 @@ func TestTVCacheKeySeparatesUpstreamVariants(t *testing.T) {
   }
 }
 
+func TestTVPrefetchParsesThirtySecondsAndExtensionlessSegments(t *testing.T) {
+	base, _ := url.Parse("https://origin.example/live/index.m3u8")
+	playlist := []byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg001\n#EXTINF:6.0,\nseg002.ts\n#EXTINF:6.0,\nseg003\n#EXTINF:6.0,\nseg004.m4s\n#EXTINF:6.0,\nseg005\n")
+	candidates := parseTVPrefetchCandidates("channel-1", base, playlist, 30*time.Second)
+	if len(candidates) != 5 { t.Fatalf("expected 5 advertised segments for a 30s window, got %d", len(candidates)) }
+	var total time.Duration
+	for _, candidate := range candidates { total += candidate.duration }
+	if total < 30*time.Second { t.Fatalf("expected at least 30s of advertised media, got %s", total) }
+	if candidates[0].name != "seg001" || candidates[2].name != "seg003" || candidates[4].name != "seg005" {
+		t.Fatalf("extensionless HLS media URI was not accepted: %#v", candidates)
+	}
+}
+
 func TestTVPrefetchDefaults(t *testing.T) {
   cfg := config.Load()
   if cfg.TVPrefetchSeconds < 30*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
