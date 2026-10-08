@@ -11,6 +11,7 @@ type Config struct {
     CloudinaryCloudName string
     CloudinaryImageBaseURL string
     CloudinaryVideoBaseURL string
+    R2PublicBaseURL string
     UpstashRedisURL string
     UpstashRedisToken string
     UpstashLockTTL time.Duration
@@ -49,6 +50,7 @@ func Load() Config {
         CloudinaryCloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"),
         CloudinaryImageBaseURL: strings.TrimRight(os.Getenv("CLOUDINARY_IMAGE_BASE_URL"),"/"),
         CloudinaryVideoBaseURL: strings.TrimRight(os.Getenv("CLOUDINARY_VIDEO_BASE_URL"),"/"),
+        R2PublicBaseURL: strings.TrimRight(os.Getenv("R2_PUBLIC_BASE_URL"),"/"),
         UpstashRedisURL: strings.TrimRight(os.Getenv("UPSTASH_REDIS_REST_URL"),"/"),
         UpstashRedisToken: os.Getenv("UPSTASH_REDIS_REST_TOKEN"),
         UpstashLockTTL: duration("UPSTASH_LOCK_TTL",8*time.Second),
