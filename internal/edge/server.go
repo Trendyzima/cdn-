@@ -109,7 +109,7 @@ func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
  var expires any
  if private && s.cfg.PlaybackSecret!=""{
   exp:=time.Now().Add(10*time.Minute).Unix()
-  mediaURL+="?token="+url.QueryEscape(signToken(rel,s.cfg.PlaybackSecret,strconv.FormatInt(exp,10)))
+  expText:=strconv.FormatInt(exp,10);mediaURL+="?token="+url.QueryEscape(expText+"."+signToken(rel,s.cfg.PlaybackSecret,expText))
   expires=exp
  }
  w.Header().Set("Content-Type","application/json")
