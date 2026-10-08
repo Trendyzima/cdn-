@@ -35,7 +35,7 @@ function json(body, status = 200, extra = {}) {
   return new Response(JSON.stringify(body), {status, headers: headers({"content-type":"application/json; charset=utf-8","cache-control":"no-store",...extra})});
 }
 async function objectResponse(req, env, key) {
-  if (!key || key.length > 512 || key.includes("\\") || key.includes("..") || key.startsWith("/")) return json({error:"Not found"},404);
+  if (!key || key.length > 512 || key.includes("\\") || key.includes("..") || key.startsWith("/")) return json({error:"Not found"},404);\n  const segments = key.split("/");\n  if (segments.length < 3 || !["users","profiles","uploads","avatars","covers","photos","videos","media"].includes(segments[0])) return json({error:"Not found"},404);
   const r = range(req.headers.get("Range"));
   let o;
   try {
