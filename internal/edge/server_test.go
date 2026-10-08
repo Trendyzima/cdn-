@@ -62,3 +62,32 @@ func TestLegacyMediaAliasesReachAssetHandler(t *testing.T) {
   if rr.Code == 404 || rr.Code == 400 { t.Fatalf("legacy media route %s was rejected before reaching origin: status=%d", route, rr.Code) }
  }
 }
+
+
+func TestXCloneMediaAliases(t *testing.T) {
+ s := New(testConfig(t))
+ for _, route := range []string{
+  "/uploads/posts/123/image.jpg",
+  "/avatars/users/123/avatar.webp",
+  "/covers/users/123/header.png",
+  "/photos/posts/123/photo.jpg",
+  "/videos/posts/123/video.mp4",
+ } {
+  rr := httptest.NewRecorder()
+  s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", route, nil))
+  if rr.Code == 400 || rr.Code == 404 { t.Fatalf("XClone media alias %s rejected: %d", route, rr.Code) }
+ }
+}
+
+func TestMediaURLContract(t *testing.T) {
+ cfg := testConfig(t)
+ cfg.PublicBaseURL = "https://media.testagram.site"
+ cfg.MediaURLPrefix = "/media"
+ s := New(cfg)
+ rr := httptest.NewRecorder()
+ s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/v1/media/url?path=users/u1/avatar.webp", nil))
+ if rr.Code != 200 { t.Fatalf("media URL status=%d", rr.Code) }
+ if !strings.Contains(rr.Body.String(), "https://media.testagram.site/media/users/u1/avatar.webp") {
+  t.Fatalf("unexpected media URL: %s", rr.Body.String())
+ }
+}
