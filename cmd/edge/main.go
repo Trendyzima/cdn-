@@ -21,9 +21,9 @@ func main() {
         Addr:              cfg.ListenAddr,
         Handler:           handler,
         ReadHeaderTimeout: 5 * time.Second,
-        ReadTimeout:       30 * time.Second,
-        WriteTimeout:      5 * time.Minute,
-        IdleTimeout:       120 * time.Second,
+        ReadTimeout:       15 * time.Second,
+        WriteTimeout:      0, // live HLS/DASH delivery must not be killed by a fixed write deadline
+        IdleTimeout:       180 * time.Second,
         MaxHeaderBytes:    32 << 10,
     }
 
