@@ -8,9 +8,5 @@ preview_urls = false
 binding = "MEDIA_BUCKET"
 bucket_name = "testagram-media"
 
-[[routes]]
-pattern = "media.testagram.site/*"
-zone_name = "testagram.site"
-
 [observability]
 enabled = true
