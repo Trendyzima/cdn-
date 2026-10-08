@@ -34,23 +34,25 @@ func TestCapacity100kLogicalViewers(t *testing.T) {
  s:=New(cfg)
  h:=s.Handler()
  const viewers=100000
- const maxConcurrent=4096
- sem:=make(chan struct{},maxConcurrent)
+ const workers=2048
+ jobs:=make(chan struct{},workers)
  var wg sync.WaitGroup
  var ok atomic.Int64
  var failures atomic.Int64
  var firstFailure atomic.Int64
- wg.Add(viewers)
- for i:=0;i<viewers;i++{
+ for w:=0;w<workers;w++{
+  wg.Add(1)
   go func(){
    defer wg.Done()
-   sem<-struct{}{}
-   rr:=httptest.NewRecorder()
-   h.ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/live/capacity.ts",nil))
-   <-sem
-   if rr.Code==http.StatusOK&&rr.Body.Len()==1024{ok.Add(1)}else{if failures.Add(1)==1{firstFailure.Store(int64(rr.Code))}}
+   for range jobs{
+    rr:=httptest.NewRecorder()
+    h.ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/live/capacity.ts",nil))
+    if rr.Code==http.StatusOK&&rr.Body.Len()==1024{ok.Add(1)}else{if failures.Add(1)==1{firstFailure.Store(int64(rr.Code))}}
+   }
   }()
  }
+ for i:=0;i<viewers;i++{jobs<-struct{}{}}
+ close(jobs)
  wg.Wait()
  if got:=ok.Load();got!=viewers{t.Fatalf("100k logical viewer simulation: %d/%d succeeded; first failure HTTP status=%d; failures=%d",got,viewers,firstFailure.Load(),failures.Load())}
  if got:=originCalls.Load();got!=1{t.Fatalf("cache fanout regression: expected 1 origin fetch, got %d",got)}
