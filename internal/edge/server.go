@@ -79,7 +79,7 @@ func(s *Server)Handler()http.Handler{
  m:=http.NewServeMux()
  m.HandleFunc("/healthz",s.health);m.HandleFunc("/readyz",s.ready);m.HandleFunc("/metrics",s.metrics)
  m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/media/url",s.mediaURL);m.HandleFunc("/api/media/url",s.mediaURL);m.HandleFunc("/v1/tv/",s.tvAsset);m.HandleFunc("/v1/",s.asset);m.HandleFunc("/media/",s.mediaAlias);m.HandleFunc("/users/",s.mediaAlias);m.HandleFunc("/profiles/",s.mediaAlias);m.HandleFunc("/uploads/",s.mediaAlias);m.HandleFunc("/avatars/",s.mediaAlias);m.HandleFunc("/covers/",s.mediaAlias);m.HandleFunc("/photos/",s.mediaAlias);m.HandleFunc("/videos/",s.mediaAlias)
- return s.cors(s.security(s.rateLimit(m)))
+ return s.cdnIdentity(s.cors(s.security(s.rateLimit(m))))
 }
 func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Cache-Control","no-store");items,bytes,capacity:=s.cache.Stats();hotBytes,hotCapacity:=s.cache.HotStats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"hot_cache_bytes":hotBytes,"hot_cache_capacity":hotCapacity,"stale_hits":s.staleHits.Load()})}
 func(s *Server)ready(w http.ResponseWriter,_ *http.Request){if len(s.cfg.OriginURLs)==0&&len(s.cfg.ShieldURLs)==0{http.Error(w,"upstream not configured",503);return};w.WriteHeader(200);_,_=w.Write([]byte("ready"))}
@@ -320,3 +320,14 @@ func hash(b []byte)string{h:=sha256.Sum256(b);return hex.EncodeToString(h[:])[:1
 func age(e cache.Entry)string{a:=time.Since(e.CreatedAt);if a<0{return "0"};return strconv.FormatInt(int64(a/time.Second),10)}
 func(s *Server)cors(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){o:=r.Header.Get("Origin");allowed:=len(s.cfg.AllowedOrigins)==0;for _,a:=range s.cfg.AllowedOrigins{if o==a{allowed=true;break}};if allowed&&o!=""{w.Header().Set("Access-Control-Allow-Origin",o);w.Header().Set("Vary","Origin")};if r.Method=="OPTIONS"{w.Header().Set("Access-Control-Allow-Methods","GET,HEAD,OPTIONS");w.Header().Set("Access-Control-Allow-Headers","Range,Content-Type");w.WriteHeader(204);return};next.ServeHTTP(w,r)})}
 func(s *Server)security(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Referrer-Policy","no-referrer");w.Header().Set("X-Frame-Options","DENY");next.ServeHTTP(w,r)})}
+
+
+const cdnVersion = "2026-10-08-go-edge-iptv-v1"
+
+func (s *Server) cdnIdentity(next http.Handler) http.Handler {
+  return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("X-Testagram-CDN", "testagram-edge")
+    w.Header().Set("X-Testagram-CDN-Version", cdnVersion)
+    next.ServeHTTP(w, r)
+  })
+}
