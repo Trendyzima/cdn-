@@ -76,7 +76,7 @@ sv:=&Server{cfg:cfg,cache:c,client:&http.Client{Transport:tr,Timeout:cfg.OriginT
 func(s *Server)Handler()http.Handler{
  m:=http.NewServeMux()
  m.HandleFunc("/healthz",s.health);m.HandleFunc("/readyz",s.ready);m.HandleFunc("/metrics",s.metrics)
- m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/tv/",s.tvAsset);m.HandleFunc("/v1/",s.asset);m.HandleFunc("/media/",s.mediaAlias);m.HandleFunc("/users/",s.mediaAlias);m.HandleFunc("/profiles/",s.mediaAlias)
+ m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/media/url",s.mediaURL);m.HandleFunc("/api/media/url",s.mediaURL);m.HandleFunc("/v1/tv/",s.tvAsset);m.HandleFunc("/v1/",s.asset);m.HandleFunc("/media/",s.mediaAlias);m.HandleFunc("/users/",s.mediaAlias);m.HandleFunc("/profiles/",s.mediaAlias);m.HandleFunc("/uploads/",s.mediaAlias);m.HandleFunc("/avatars/",s.mediaAlias);m.HandleFunc("/covers/",s.mediaAlias);m.HandleFunc("/photos/",s.mediaAlias);m.HandleFunc("/videos/",s.mediaAlias)
  return s.cors(s.security(s.rateLimit(m)))
 }
 func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");items,bytes,capacity:=s.cache.Stats();hotBytes,hotCapacity:=s.cache.HotStats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"hot_cache_bytes":hotBytes,"hot_cache_capacity":hotCapacity,"stale_hits":s.staleHits.Load()})}
@@ -89,6 +89,29 @@ func(s *Server)route(w http.ResponseWriter,r *http.Request){
  h:=sha256.Sum256([]byte(key));var n uint64;for _,v:=range h{n=(n<<5)^uint64(v)+(n>>2)}
  idx:=int(n%uint64(len(s.cfg.EdgeURLs)))
  w.Header().Set("Content-Type","application/json");_ = json.NewEncoder(w).Encode(map[string]any{"node_id":s.cfg.NodeID,"edge":s.cfg.EdgeURLs[idx],"index":idx})
+}
+
+func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
+ if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
+ raw:=strings.TrimSpace(r.URL.Query().Get("path"))
+ if raw==""{http.Error(w,"path is required",400);return}
+ rel,ok:=cleanAssetPath(raw)
+ if !ok{http.Error(w,"invalid media path",400);return}
+ base:=strings.TrimRight(s.cfg.PublicBaseURL,"/")
+ if base==""{
+  scheme:=r.Header.Get("X-Forwarded-Proto"); if scheme=="" { scheme="https" }
+  base=scheme+"://"+r.Host
+ }
+ mediaURL:=base+strings.TrimRight(s.cfg.MediaURLPrefix,"/")+"/"+rel
+ private:=r.URL.Query().Get("private")=="1"
+ var expires any
+ if private && s.cfg.PlaybackSecret!=""{
+  exp:=time.Now().Add(10*time.Minute).Unix()
+  mediaURL+="?token="+url.QueryEscape(signToken(rel,s.cfg.PlaybackSecret,strconv.FormatInt(exp,10)))
+  expires=exp
+ }
+ w.Header().Set("Content-Type","application/json")
+ _=json.NewEncoder(w).Encode(map[string]any{"url":mediaURL,"path":rel,"expires_at":expires,"public":!private})
 }
 
 func(s *Server)mediaAlias(w http.ResponseWriter,r *http.Request){
