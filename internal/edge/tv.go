@@ -181,6 +181,7 @@ func (s *Server) prefetchTVSegments(scope string, playlistURL *url.URL, data []b
 				}
 			}()
 	}
+	}
 send:
 	for _, item := range candidates {
 		select {
