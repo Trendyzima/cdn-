@@ -57,7 +57,7 @@ func TestTVRedirectRejectsPrivateTarget(t *testing.T) {
 
 
 func TestTVCachePolicyProtectsLiveContinuity(t *testing.T) {
-  if got := tvCacheControl("tv/channel/segment.ts", false); !strings.Contains(got, "stale-if-error=120") {
+  if got := tvCacheControl("tv/channel/segment.ts", false); !strings.Contains(got, "stale-if-error=300") {
     t.Fatalf("segment cache policy must retain a recovery window: %s", got)
   }
   if got := tvCacheControl("tv/channel/index.m3u8", false); !strings.Contains(got, "max-age=0") {
@@ -88,6 +88,6 @@ func TestTVPrefetchParsesThirtySecondsAndExtensionlessSegments(t *testing.T) {
 
 func TestTVPrefetchDefaults(t *testing.T) {
   cfg := config.Load()
-  if cfg.TVPrefetchSeconds < 30*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
+  if cfg.TVPrefetchSeconds < 60*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
   if cfg.TVPrefetchConcurrency < 1 || cfg.TVPrefetchConcurrency > 4 { t.Fatalf("TV prefetch concurrency must remain bounded: %d", cfg.TVPrefetchConcurrency) }
 }
