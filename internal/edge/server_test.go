@@ -17,6 +17,10 @@ func TestCleanAssetPath(t *testing.T){
   {"/v1/live/../secret",false,""},
   {"/v1/../../secret",false,""},
   {"/v1/",false,""},
+  {"/v1/users/u1/%2e%2e/secret.webp",false,""},
+  {"/v1/users/u1/../secret.webp",false,""},
+  {"/v1/etc/passwd",false,""},
+  {"/v1/users/u1/image.webp",true,"users/u1/image.webp"},
  }
  for _,tt:=range tests{got,ok:=cleanAssetPath(tt.in);if ok!=tt.ok||got!=tt.want{t.Fatalf("%q => %q,%v",tt.in,got,ok)}}
 }
@@ -115,4 +119,43 @@ func TestPrivateMediaURLProducesAuthorizedToken(t *testing.T) {
  if body.Public || body.ExpiresAt <= time.Now().Unix() { t.Fatalf("unexpected private media metadata: %+v", body) }
  u, err := url.Parse(body.URL); if err != nil { t.Fatal(err) }
  if !s.authorized("users/u1/private.webp", u.Query().Get("token")) { t.Fatalf("generated private token was not accepted") }
+}
+
+
+func TestValidateRangeHeader(t *testing.T) {
+ tests := []struct{ header string; ok bool }{
+  {"", true},
+  {"bytes=0-1023", true},
+  {"bytes=0-", true},
+  {"bytes=-1024", true},
+  {"bytes=0-1048575", true},
+  {"bytes=", false},
+  {"bytes=-0", false},
+  {"bytes=1048576-", false},
+  {"bytes=0-1048576", false},
+  {"bytes=0-1,4-5", false},
+  {"bytes=5-4", false},
+  {"items=0-1", false},
+ }
+ for _, tt := range tests {
+  ok, _ := validateRangeHeader(tt.header, 1<<20)
+  if ok != tt.ok { t.Fatalf("%q => %v, want %v", tt.header, ok, tt.ok) }
+ }
+}
+
+func TestPrivateMediaResponseIsNeverPubliclyCacheable(t *testing.T) {
+ origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  w.Header().Set("Content-Type", "image/webp")
+  _, _ = w.Write([]byte("private"))
+ }))
+ defer origin.Close()
+ cfg := testConfig(t)
+ cfg.OriginURLs = []string{origin.URL}
+ s := New(cfg)
+ rr := httptest.NewRecorder()
+ req := httptest.NewRequest("GET", "/v1/users/u1/private.webp?token=9999999999."+signToken("users/u1/private.webp","secret","9999999999"), nil)
+ s.Handler().ServeHTTP(rr, req)
+ if rr.Code != http.StatusOK { t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String()) }
+ if got := rr.Header().Get("Cache-Control"); got != "private, no-store" { t.Fatalf("private cache-control=%q", got) }
+ if got := rr.Header().Get("Vary"); got != "Authorization, Range" { t.Fatalf("private vary=%q", got) }
 }
