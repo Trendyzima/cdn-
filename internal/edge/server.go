@@ -307,7 +307,7 @@ func isLiveMedia(rel string) bool { l:=strings.ToLower(rel); return strings.HasS
 func cacheControl(rel string)string{
  l:=strings.ToLower(rel)
  if strings.HasSuffix(l,".m3u8"){return "public, max-age=0, s-maxage=1, stale-while-revalidate=2, stale-if-error=10"}
- if strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s"){return "public, max-age=10, s-maxage=30, stale-while-revalidate=30, stale-if-error=120"}
+ if strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s"){return "public, max-age=60, s-maxage=120, stale-while-revalidate=60, stale-if-error=300"}
  if strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif"){
   return "public, max-age=31536000, s-maxage=31536000, immutable, stale-if-error=86400"
  }
