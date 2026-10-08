@@ -1,10 +1,13 @@
 package edge
 
 import (
-	"net/http"\n\t"time"\n\n\t"github.com/Trendyzima/cdn-/internal/config"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Trendyzima/cdn-/internal/config"
 )
 
 func TestTVTokenBindsSource(t *testing.T) {
