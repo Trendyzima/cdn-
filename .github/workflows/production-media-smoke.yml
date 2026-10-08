@@ -40,10 +40,24 @@ jobs:
           grep -q '^testagram_edge_tv_prefetch_warmed_seconds_total ' /tmp/metrics.txt
 
   e2e-iptv:
-    if: ${{ secrets.TESTAGRAM_E2E_SUPABASE_URL != '' && secrets.TESTAGRAM_E2E_SUPABASE_ANON_KEY != '' && secrets.TESTAGRAM_E2E_AUTH_TOKEN != '' && secrets.TESTAGRAM_E2E_STREAM_ID != '' && secrets.TESTAGRAM_E2E_SOURCE_URL != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Validate E2E IPTV contract
+        env:
+          SUPABASE_URL: ${{ secrets.TESTAGRAM_E2E_SUPABASE_URL }}
+          ANON_KEY: ${{ secrets.TESTAGRAM_E2E_SUPABASE_ANON_KEY }}
+          AUTH_TOKEN: ${{ secrets.TESTAGRAM_E2E_AUTH_TOKEN }}
+          STREAM_ID: ${{ secrets.TESTAGRAM_E2E_STREAM_ID }}
+          SOURCE_URL: ${{ secrets.TESTAGRAM_E2E_SOURCE_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$SUPABASE_URL" || { echo "::error::TESTAGRAM_E2E_SUPABASE_URL is not configured"; exit 1; }
+          test -n "$ANON_KEY" || { echo "::error::TESTAGRAM_E2E_SUPABASE_ANON_KEY is not configured"; exit 1; }
+          test -n "$AUTH_TOKEN" || { echo "::error::TESTAGRAM_E2E_AUTH_TOKEN is not configured"; exit 1; }
+          test -n "$STREAM_ID" || { echo "::error::TESTAGRAM_E2E_STREAM_ID is not configured"; exit 1; }
+          test -n "$SOURCE_URL" || { echo "::error::TESTAGRAM_E2E_SOURCE_URL is not configured"; exit 1; }
+
       - name: Request signed IPTV playback URL
         env:
           SUPABASE_URL: ${{ secrets.TESTAGRAM_E2E_SUPABASE_URL }}
