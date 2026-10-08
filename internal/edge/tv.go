@@ -86,7 +86,7 @@ func (s *Server) fetchTVCoalesced(key string, target *url.URL, scope, rel string
   if f.err == nil {
     ttl := ttlForTV(s.cfg,rel)
     if _,e := s.cache.Put(key,f.data,ttl,s.cfg.StaleIfError); e != nil { f.err=e }
-    if f.err == nil && isHLSContent(target,f.contentType,f.data) { s.prefetchTVSegments(scope,target,f.data) }
+    if f.err == nil && isHLSContent(target,f.contentType,f.data) { go s.prefetchTVSegments(scope,target,f.data) }
   }
   s.inflight.Add(^uint64(0))
   s.mu.Lock(); close(f.done); delete(s.tvFetching,key); s.mu.Unlock()
@@ -226,7 +226,7 @@ func tvRewriteAttributes(scope string,base *url.URL,line string,s *Server) strin
 }
 
 func (s *Server) tvProxyURL(scope string,target *url.URL) string {
-  exp:=time.Now().Add(10*time.Minute).Unix(); src:=target.String(); token:=s.signTVToken(scope,src,exp)
+  exp:=((time.Now().Unix()/600)+1)*600; src:=target.String(); token:=s.signTVToken(scope,src,exp)
   name:=path.Base(target.Path); if name=="." || name=="/" || name=="" { name="media" }
   return "/v1/tv/"+url.PathEscape(scope)+"/"+url.PathEscape(name)+"?src="+url.QueryEscape(src)+"&token="+url.QueryEscape(token)
 }
@@ -291,7 +291,7 @@ func tvDeliveryDirectives(q url.Values,playlist bool) url.Values {
 func tvCacheControl(rel string,blocking bool)string {
   if strings.HasSuffix(strings.ToLower(rel),".m3u8") {
     if blocking { return "public, max-age=0, s-maxage=1, stale-while-revalidate=1, stale-if-error=6" }
-    return "public, max-age=0, s-maxage=1, stale-while-revalidate=2, stale-if-error=10"
+    return "public, max-age=0, s-maxage=1, stale-while-revalidate=3, stale-if-error=15"
   }
   return cacheControl(rel)
 }
