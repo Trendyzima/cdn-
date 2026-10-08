@@ -27,6 +27,49 @@ jobs:
           # on an already-deployed node during rolling upgrades.
           exit 0
 
+      - name: Prove first-party Go CDN ownership
+        run: |
+          set -euo pipefail
+          curl --silent --show-error --max-time 15 -D /tmp/cdn-identity.headers -o /tmp/cdn-identity.body https://media.testagram.site/healthz
+          cat /tmp/cdn-identity.headers
+          grep -qi '^x-testagram-cdn: testagram-edge
+        run: |
+          set -euo pipefail
+          url='https://media.testagram.site/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
+          set +e
+          curl --silent --show-error --max-time 20 -D /tmp/headers.txt -o /tmp/media.webp "$url"
+          status=$?
+          set -e
+          echo "legacy curl exit=$status"
+          cat /tmp/headers.txt || true
+          if test -f /tmp/media.webp; then wc -c /tmp/media.webp; head -c 200 /tmp/media.webp | cat -v; fi
+          test "$status" -eq 0
+          grep -qi '^content-type: image/webp' /tmp/headers.txt
+          test "$(wc -c < /tmp/media.webp)" -gt 1000
+          grep -qi '^x-cache:' /tmp/headers.txt
+
+      - name: Check native v1 post image delivery
+        run: |
+          set -euo pipefail
+          url='https://media.testagram.site/v1/users/aba391ed-7f8f-41b7-8be5-e7d9c20c4517/1f17cfb7-e31c-4e59-aaa8-e09f4bac7c8e.webp'
+          set +e
+          curl --silent --show-error --max-time 20 -D /tmp/headers-v1.txt -o /tmp/media-v1.webp "$url"
+          status=$?
+          set -e
+          echo "v1 curl exit=$status"
+          cat /tmp/headers-v1.txt || true
+          if test -f /tmp/media-v1.webp; then wc -c /tmp/media-v1.webp; head -c 200 /tmp/media-v1.webp | cat -v; fi
+          test "$status" -eq 0
+          grep -qi '^content-type: image/webp' /tmp/headers-v1.txt
+          test "$(wc -c < /tmp/media-v1.webp)" -gt 1000 /tmp/cdn-identity.headers || {
+            echo "::error::media.testagram.site is not terminating on the first-party Go CDN"
+            exit 1
+          }
+          grep -qi '^x-testagram-cdn-version:' /tmp/cdn-identity.headers || {
+            echo "::error::first-party Go CDN version marker is missing"
+            exit 1
+          }
+
       - name: Check legacy post image delivery
         run: |
           set -euo pipefail
