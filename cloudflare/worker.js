@@ -36,7 +36,8 @@ function json(body, status = 200, extra = {}) {
 }
 async function objectResponse(req, env, key) {
   if (!key || key.length > 512 || key.includes("\\") || key.includes("..") || key.startsWith("/")) return json({error:"Not found"},404);
-  const segments = key.split("/");\n  if (segments.length < 3 || !["users","profiles","uploads","avatars","covers","photos","videos","media"].includes(segments[0])) return json({error:"Not found"},404);
+  const segments = key.split("/");
+  if (segments.length < 3 || !["users","profiles","uploads","avatars","covers","photos","videos","media"].includes(segments[0])) return json({error:"Not found"},404);
   const r = range(req.headers.get("Range"));
   let o;
   try {
