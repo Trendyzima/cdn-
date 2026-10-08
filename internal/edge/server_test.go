@@ -159,3 +159,26 @@ func TestPrivateMediaResponseIsNeverPubliclyCacheable(t *testing.T) {
  if got := rr.Header().Get("Cache-Control"); got != "private, no-store" { t.Fatalf("private cache-control=%q", got) }
  if got := rr.Header().Get("Vary"); got != "Authorization, Range" { t.Fatalf("private vary=%q", got) }
 }
+
+
+func TestIPTVCORSContract(t *testing.T) {
+ cfg := testConfig(t)
+ cfg.AllowedOrigins = []string{"https://testagram.site"}
+ s := New(cfg)
+
+ rr := httptest.NewRecorder()
+ req := httptest.NewRequest(http.MethodOptions, "/v1/tv/live/seg.ts", nil)
+ req.Header.Set("Origin", "https://testagram.site")
+ req.Header.Set("Access-Control-Request-Headers", "range")
+ s.Handler().ServeHTTP(rr, req)
+ if rr.Code != http.StatusNoContent { t.Fatalf("preflight status=%d", rr.Code) }
+ if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://testagram.site" { t.Fatalf("allow-origin=%q", got) }
+ if got := rr.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Range") || !strings.Contains(got, "Authorization") { t.Fatalf("allow-headers=%q", got) }
+ if got := rr.Header().Get("Access-Control-Max-Age"); got != "600" { t.Fatalf("max-age=%q", got) }
+
+ blocked := httptest.NewRecorder()
+ blockedReq := httptest.NewRequest(http.MethodOptions, "/v1/tv/live/seg.ts", nil)
+ blockedReq.Header.Set("Origin", "https://evil.example")
+ s.Handler().ServeHTTP(blocked, blockedReq)
+ if blocked.Code != http.StatusForbidden { t.Fatalf("blocked preflight status=%d", blocked.Code) }
+}
