@@ -26,7 +26,7 @@ jobs:
       - name: Build and publish
         id: meta
         env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/testagram-edge
+          IMAGE: ghcr.io/trendyzima/testagram-edge
         run: |
           set -euo pipefail
           docker build --pull -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:main" .
