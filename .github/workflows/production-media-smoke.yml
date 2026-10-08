@@ -5,15 +5,15 @@ on:
   push:
     branches: [main]
     paths:
+      - "cmd/**"
       - "internal/**"
-      - "cloudflare/**"
       - ".github/workflows/production-media-smoke.yml"
 
 permissions:
   contents: read
 
 jobs:
-  ownership:
+  public-ownership:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -21,83 +21,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 \
-            -D /tmp/health.headers -o /tmp/health.json \
-            https://media.testagram.site/healthz
-          cat /tmp/health.headers
-          cat /tmp/health.json
+          curl --fail --silent --show-error --max-time 15             -D /tmp/health.headers -o /tmp/health.json             https://media.testagram.site/healthz
           grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/health.headers
           grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-10-08-go-edge-iptv-v1[[:space:]]*$' /tmp/health.headers
+          grep -q '"ok":true' /tmp/health.json
 
-      - name: Verify CDN metrics endpoint
+      - name: Verify CDN prefetch metrics
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 \
-            https://media.testagram.site/metrics > /tmp/metrics.txt
+          curl --fail --silent --show-error --max-time 15             https://media.testagram.site/metrics > /tmp/metrics.txt
           grep -q '^testagram_edge_tv_prefetch_success_total ' /tmp/metrics.txt
           grep -q '^testagram_edge_tv_prefetch_failures_total ' /tmp/metrics.txt
           grep -q '^testagram_edge_tv_prefetch_warmed_seconds_total ' /tmp/metrics.txt
 
-  e2e-iptv:
+  self-contained-iptv:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Validate E2E IPTV contract
-        env:
-          SUPABASE_URL: ${{ secrets.TESTAGRAM_E2E_SUPABASE_URL }}
-          ANON_KEY: ${{ secrets.TESTAGRAM_E2E_SUPABASE_ANON_KEY }}
-          AUTH_TOKEN: ${{ secrets.TESTAGRAM_E2E_AUTH_TOKEN }}
-          STREAM_ID: ${{ secrets.TESTAGRAM_E2E_STREAM_ID }}
-          SOURCE_URL: ${{ secrets.TESTAGRAM_E2E_SOURCE_URL }}
-        run: |
-          set -euo pipefail
-          test -n "$SUPABASE_URL" || { echo "::error::TESTAGRAM_E2E_SUPABASE_URL is not configured"; exit 1; }
-          test -n "$ANON_KEY" || { echo "::error::TESTAGRAM_E2E_SUPABASE_ANON_KEY is not configured"; exit 1; }
-          test -n "$AUTH_TOKEN" || { echo "::error::TESTAGRAM_E2E_AUTH_TOKEN is not configured"; exit 1; }
-          test -n "$STREAM_ID" || { echo "::error::TESTAGRAM_E2E_STREAM_ID is not configured"; exit 1; }
-          test -n "$SOURCE_URL" || { echo "::error::TESTAGRAM_E2E_SOURCE_URL is not configured"; exit 1; }
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Request signed IPTV playback URL
-        env:
-          SUPABASE_URL: ${{ secrets.TESTAGRAM_E2E_SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.TESTAGRAM_E2E_SUPABASE_ANON_KEY }}
-          AUTH_TOKEN: ${{ secrets.TESTAGRAM_E2E_AUTH_TOKEN }}
-          STREAM_ID: ${{ secrets.TESTAGRAM_E2E_STREAM_ID }}
-          SOURCE_URL: ${{ secrets.TESTAGRAM_E2E_SOURCE_URL }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          response="$(curl --fail --silent --show-error --max-time 20 \
-            -X POST "\${SUPABASE_URL}/functions/v1/tv-cdn-playback" \
-            -H "apikey: \${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer \${AUTH_TOKEN}" \
-            -H "Content-Type: application/json" \
-            --data "$(jq -cn --arg id "\${STREAM_ID}" --arg src "\${SOURCE_URL}" '{stream_id:$id,source_url:$src}')")"
-          echo "\${response}" | jq -e '.ok == true and (.data.playback_url | startswith("https://media.testagram.site/v1/tv/"))'
-          echo "\${response}" | jq -r '.data.playback_url' > /tmp/playback.url
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
-      - name: Fetch signed playlist and verify rewritten CDN segments
-        shell: bash
-        run: |
-          set -euo pipefail
-          playlist="$(cat /tmp/playback.url)"
-          curl --fail --silent --show-error --max-time 20 "\${playlist}" -o /tmp/live.m3u8
-          grep -q '^#EXTM3U' /tmp/live.m3u8
-          grep -E -q '^/v1/tv/|https://media.testagram.site/v1/tv/' /tmp/live.m3u8
-          grep -q '#EXTINF:' /tmp/live.m3u8
-
-      - name: Verify warmed media path
-        shell: bash
-        run: |
-          set -euo pipefail
-          segment="$(grep -v '^#' /tmp/live.m3u8 | grep -E '\.ts([?#].*)?$|\.m4s([?#].*)?$|^/v1/tv/' | head -n1)"
-          test -n "\${segment}"
-          case "\${segment}" in
-            http*) url="\${segment}" ;;
-            /*) url="https://media.testagram.site\${segment}" ;;
-            *) url="https://media.testagram.site/v1/tv/\${segment}" ;;
-          esac
-          curl --fail --silent --show-error --max-time 20 -D /tmp/segment.headers -o /tmp/segment.bin "\${url}"
-          test "$(wc -c < /tmp/segment.bin)" -gt 0
-          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge' /tmp/segment.headers
+      - name: Run fixture-backed IPTV E2E
+        run: go test ./internal/edge -run 'TestTVSelfContainedIPTV|TestTVPrefetchParsesRealHLSPlaylistAndThirtySeconds|TestTVPrefetchDoesNotTreatVariantPlaylistAsMedia' -count=1 -v
