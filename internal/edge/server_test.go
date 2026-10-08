@@ -1,6 +1,8 @@
 package edge
 
 import (
+ "encoding/json"
+ "net/url"
  "net/http"
  "net/http/httptest"
  "testing"
@@ -97,4 +99,20 @@ func TestR2MediaOrigin(t *testing.T) {
  s := New(cfg)
  data, ok := s.fetchR2("users/u1/avatar.webp")
  if !ok || len(data) != 2048 { t.Fatalf("R2 media origin failed: ok=%v bytes=%d", ok, len(data)) }
+}
+
+func TestPrivateMediaURLProducesAuthorizedToken(t *testing.T) {
+ cfg := testConfig(t)
+ cfg.PublicBaseURL = "https://media.testagram.site"
+ cfg.MediaURLPrefix = "/v1"
+ cfg.PlaybackSecret = "test-secret"
+ s := New(cfg)
+ rr := httptest.NewRecorder()
+ s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/v1/media/url?path=users/u1/private.webp&private=1", nil))
+ if rr.Code != http.StatusOK { t.Fatalf("media URL status=%d", rr.Code) }
+ var body struct { URL string `json:"url"`; ExpiresAt int64 `json:"expires_at"`; Public bool `json:"public"` }
+ if err := json.NewDecoder(rr.Body).Decode(&body); err != nil { t.Fatal(err) }
+ if body.Public || body.ExpiresAt <= time.Now().Unix() { t.Fatalf("unexpected private media metadata: %+v", body) }
+ u, err := url.Parse(body.URL); if err != nil { t.Fatal(err) }
+ if !s.authorized("users/u1/private.webp", u.Query().Get("token")) { t.Fatalf("generated private token was not accepted") }
 }
