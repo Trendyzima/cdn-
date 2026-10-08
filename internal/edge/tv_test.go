@@ -2,6 +2,7 @@ package edge
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -91,6 +92,63 @@ func TestTVPrefetchDoesNotTreatVariantPlaylistAsMedia(t *testing.T) {
 	playlist := []byte("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nvariant-one\n#EXT-X-STREAM-INF:BANDWIDTH=1600000\nvariant-two.m3u8\n")
 	candidates := parseTVPrefetchCandidates("channel-1", base, playlist, 30*time.Second)
 	if len(candidates) != 0 { t.Fatalf("master playlist variant URIs must not be prefetched as media: %#v", candidates) }
+}
+
+
+type tvRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f tvRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestTVSelfContainedIPTV(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/live/index.m3u8":
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:6.0,\nseg001\n#EXTINF:6.0,\nseg002\n#EXTINF:6.0,\nseg003\n#EXTINF:6.0,\nseg004\n#EXTINF:6.0,\nseg005\n#EXTINF:6.0,\nseg006\n#EXTINF:6.0,\nseg007\n#EXTINF:6.0,\nseg008\n")
+		default:
+			w.Header().Set("Content-Type", "video/mp2t")
+			_, _ = w.Write([]byte("segment-bytes"))
+		}
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(t)
+	cfg.PlaybackSecret = "test-secret"
+	cfg.TVPrefetchSeconds = 45 * time.Second
+	cfg.TVPrefetchConcurrency = 4
+	s := New(cfg)
+	s.tvClient.Transport = tvRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		clone := r.Clone(r.Context())
+		u := *r.URL
+		originURL, _ := url.Parse(origin.URL)
+		u.Scheme, u.Host = originURL.Scheme, originURL.Host
+		clone.URL = &u
+		return http.DefaultTransport.RoundTrip(clone)
+	})
+
+	src := "https://origin.test/live/index.m3u8"
+	exp := time.Now().Add(10 * time.Minute).Unix()
+	token := s.signTVToken("channel-e2e", src, exp)
+	req := httptest.NewRequest(http.MethodGet, "/v1/tv/channel-e2e/index.m3u8?src="+url.QueryEscape(src)+"&token="+url.QueryEscape(token), nil)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK { t.Fatalf("playlist status=%d body=%s", rr.Code, rr.Body.String()) }
+	body := rr.Body.String()
+	if !strings.Contains(body, "#EXTM3U") || !strings.Contains(body, "#EXTINF:6.0") { t.Fatalf("invalid rewritten HLS playlist: %s", body) }
+	if !strings.Contains(body, "/v1/tv/channel-e2e/") { t.Fatalf("playlist was not rewritten to canonical CDN paths: %s", body) }
+	if got := s.tvPrefetchSuccesses.Load(); got < 1 { t.Fatalf("expected prefetch success, got %d", got) }
+	if got := s.tvPrefetchWarmedSeconds.Load(); got < 30 { t.Fatalf("expected >=30 warmed seconds, got %d", got) }
+
+	lines := strings.Split(body, "\n")
+	var segmentURL string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "/v1/tv/channel-e2e/") { segmentURL = line; break }
+	}
+	if segmentURL == "" { t.Fatal("expected rewritten segment URI") }
+	segmentResp := httptest.NewRecorder()
+	s.Handler().ServeHTTP(segmentResp, httptest.NewRequest(http.MethodGet, segmentURL, nil))
+	if segmentResp.Code != http.StatusOK { t.Fatalf("rewritten segment status=%d body=%s", segmentResp.Code, segmentResp.Body.String()) }
+	if segmentResp.Body.Len() == 0 { t.Fatal("rewritten segment returned empty body") }
 }
 
 func TestTVPrefetchDefaults(t *testing.T) {
