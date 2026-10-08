@@ -75,12 +75,12 @@ func TestXCloneMediaAliases(t *testing.T) {
 func TestMediaURLContract(t *testing.T) {
  cfg := testConfig(t)
  cfg.PublicBaseURL = "https://media.testagram.site"
- cfg.MediaURLPrefix = "/media"
+ cfg.MediaURLPrefix = "/v1"
  s := New(cfg)
  rr := httptest.NewRecorder()
  s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/v1/media/url?path=users/u1/avatar.webp", nil))
  if rr.Code != 200 { t.Fatalf("media URL status=%d", rr.Code) }
- if !strings.Contains(rr.Body.String(), "https://media.testagram.site/media/users/u1/avatar.webp") {
+ if !strings.Contains(rr.Body.String(), "https://media.testagram.site/v1/users/u1/avatar.webp") {
   t.Fatalf("unexpected media URL: %s", rr.Body.String())
  }
 }
