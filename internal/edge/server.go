@@ -81,8 +81,7 @@ func(s *Server)Handler()http.Handler{
  m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/media/url",s.mediaURL);m.HandleFunc("/api/media/url",s.mediaURL);m.HandleFunc("/v1/tv/",s.tvAsset);m.HandleFunc("/v1/",s.asset);m.HandleFunc("/media/",s.mediaAlias);m.HandleFunc("/users/",s.mediaAlias);m.HandleFunc("/profiles/",s.mediaAlias);m.HandleFunc("/uploads/",s.mediaAlias);m.HandleFunc("/avatars/",s.mediaAlias);m.HandleFunc("/covers/",s.mediaAlias);m.HandleFunc("/photos/",s.mediaAlias);m.HandleFunc("/videos/",s.mediaAlias)
  return s.cors(s.security(s.rateLimit(m)))
 }
-func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Cache-Control","no-store");items,bytes,capacity:=s.cache.Stats();
- hotBytes,hotCapacity:=s.cache.HotStats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"hot_cache_bytes":hotBytes,"hot_cache_capacity":hotCapacity,"stale_hits":s.staleHits.Load()})}
+func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Cache-Control","no-store");items,bytes,capacity:=s.cache.Stats();hotBytes,hotCapacity:=s.cache.HotStats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"hot_cache_bytes":hotBytes,"hot_cache_capacity":hotCapacity,"stale_hits":s.staleHits.Load()})}
 func(s *Server)ready(w http.ResponseWriter,_ *http.Request){if len(s.cfg.OriginURLs)==0&&len(s.cfg.ShieldURLs)==0{http.Error(w,"upstream not configured",503);return};w.WriteHeader(200);_,_=w.Write([]byte("ready"))}
 func(s *Server)metrics(w http.ResponseWriter,_ *http.Request){items,bytes,capacity:=s.cache.Stats();w.Header().Set("Content-Type","text/plain; version=0.0.4");fmt.Fprintf(w,"testagram_edge_cache_hits_total %d\n",s.hits.Load());fmt.Fprintf(w,"testagram_edge_cache_misses_total %d\n",s.misses.Load());fmt.Fprintf(w,"testagram_edge_upstream_requests_total %d\n",s.upstream.Load());fmt.Fprintf(w,"testagram_edge_inflight_requests %d\n",s.inflight.Load());fmt.Fprintf(w,"testagram_edge_bytes_served_total %d\n",s.served.Load());fmt.Fprintf(w,"testagram_edge_rejected_requests_total %d\n",s.rejected.Load());fmt.Fprintf(w,"testagram_edge_stale_hits_total %d\n",s.staleHits.Load());fmt.Fprintf(w,"testagram_edge_cache_items %d\n",items);fmt.Fprintf(w,"testagram_edge_cache_bytes %d\n",bytes);fmt.Fprintf(w,"testagram_edge_cache_capacity_bytes %d\n",capacity);hotBytes,hotCapacity:=s.cache.HotStats();fmt.Fprintf(w,"testagram_edge_hot_cache_bytes %d\n",hotBytes);fmt.Fprintf(w,"testagram_edge_hot_cache_capacity_bytes %d\n",hotCapacity)}
 
@@ -132,13 +131,13 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if r.Method!=http.MethodGet&&r.Method!=http.MethodHead{http.Error(w,"method not allowed",405);return}
  rel,ok:=cleanAssetPath(r.URL.Path);if !ok{s.rejected.Add(1);http.Error(w,"invalid path",400);return}
  if !s.authorized(rel,r.URL.Query().Get("token")){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
- if e,data,err:=s.cache.GetHot(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveBytes(w,r,data);return};if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e));s.serveEntry(w,r,e);return}
+ if e,data,err:=s.cache.GetHot(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.serveBytes(w,r,data);return};if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.serveEntry(w,r,e);return}
  stale,staleErr:=s.cache.GetStale(rel);s.misses.Add(1)
  ttl:=s.cfg.SegmentTTL;if strings.HasSuffix(strings.ToLower(rel),".m3u8"){ttl=s.cfg.ManifestTTL}
  data,err:=s.fetchCoalesced(rel,ttl,s.cfg.StaleIfError)
  if err!=nil&&staleErr==nil{s.staleHits.Add(1);setType(w,rel);w.Header().Set("X-Cache","STALE");w.Header().Set("Cache-Status","testagram; stale-if-error");w.Header().Set("Warning","110 - Response is stale");w.Header().Set("Age",age(stale));s.serveEntry(w,r,stale);return}
  if err!=nil{http.Error(w,"upstream unavailable",502);return}
- setType(w,rel);w.Header().Set("X-Cache","MISS");w.Header().Set("Cache-Status","testagram; fwd=uri-miss");w.Header().Set("ETag","\""+hash(data)+"\"");w.Header().Set("Cache-Control",cacheControl(rel));s.served.Add(uint64(len(data)));http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
+ setType(w,rel);w.Header().Set("X-Cache","MISS");w.Header().Set("Cache-Status","testagram; fwd=uri-miss");w.Header().Set("ETag","\""+hash(data)+"\"");w.Header().Set("Cache-Control",cacheControl(rel)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.served.Add(uint64(len(data)));http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
 }
 func(s *Server)serveBytes(w http.ResponseWriter,r *http.Request,data []byte){http.ServeContent(w,r,"hot",time.Time{},bytes.NewReader(data))}
 
@@ -205,9 +204,13 @@ func(s *Server)fetchCloudinary(rel string)([]byte,bool){
 
 func(s *Server)purge(w http.ResponseWriter,r *http.Request){if r.Method!=http.MethodPost&&r.Method!=http.MethodDelete{http.Error(w,"method not allowed",405);return};if s.cfg.PurgeToken==""||!hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte("Bearer "+s.cfg.PurgeToken)){http.Error(w,"unauthorized",401);return};key:=strings.TrimSpace(r.URL.Query().Get("path"));if key==""{s.cache.Clear();w.WriteHeader(204);return};rel,ok:=cleanAssetPath("/v1/"+key);if !ok{http.Error(w,"invalid path",400);return};if !s.cache.Delete(rel){w.WriteHeader(404);return};w.WriteHeader(204)}
 
-func signToken(rel,secret,exp string)string{mac:=hmac.New(sha256.New,[]byte(secret));_,_=mac.Write([]byte(rel+"|"+exp));return exp+"."+hex.EncodeToString(mac.Sum(nil))}
 
-func(s *Server)authorized(rel,token string)bool{if s.cfg.PlaybackSecret==""{return true};parts:=strings.Split(token,".");if len(parts)!=2{return false};exp,e:=strconv.ParseInt(parts[0],10,64);if e!=nil||exp<time.Now().Unix(){return false};mac:=hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret));_,_=mac.Write([]byte(rel+"|"+parts[0]));expected:=hex.EncodeToString(mac.Sum(nil));return hmac.Equal([]byte(expected),[]byte(parts[1]))}
+func signToken(rel, secret, exp string) string {
+ mac := hmac.New(sha256.New, []byte(secret))
+ _, _ = mac.Write([]byte(rel + "|" + exp))
+ return hex.EncodeToString(mac.Sum(nil))
+}
+\nfunc(s *Server)authorized(rel,token string)bool{if s.cfg.PlaybackSecret==""{return true};parts:=strings.Split(token,".");if len(parts)!=2{return false};exp,e:=strconv.ParseInt(parts[0],10,64);if e!=nil||exp<time.Now().Unix(){return false};mac:=hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret));_,_=mac.Write([]byte(rel+"|"+parts[0]));expected:=hex.EncodeToString(mac.Sum(nil));return hmac.Equal([]byte(expected),[]byte(parts[1]))}
 func(s *Server)originBlocked(o string)bool{s.originsMu.Lock();defer s.originsMu.Unlock();return time.Now().Before(s.badUntil[o])}
 func(s *Server)blockOrigin(o string){s.originsMu.Lock();s.badUntil[o]=time.Now().Add(5*time.Second);s.originsMu.Unlock()}
 func(s *Server)clearOrigin(o string){s.originsMu.Lock();delete(s.badUntil,o);s.originsMu.Unlock()}
@@ -248,6 +251,7 @@ func setType(w http.ResponseWriter,rel string){
  default:w.Header().Set("Content-Type","application/octet-stream")
  }
 }
+func isLiveMedia(rel string) bool { l:=strings.ToLower(rel); return strings.HasSuffix(l,".m3u8")||strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s") }
 func cacheControl(rel string)string{
  l:=strings.ToLower(rel)
  if strings.HasSuffix(l,".m3u8"){return "public, max-age=1, s-maxage=1, stale-while-revalidate=2, stale-if-error=30"}
