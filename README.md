@@ -4,7 +4,32 @@ The CDN uses a two-tier local cache: a larger disk-backed cache for breadth and 
 - hot memory cache: 32 GiB by default for hottest live objects, configurable\n\nManifests are intentionally short-lived because live playlists change frequently. Segments are retained longer because their URLs normally identify immutable media once published. The exact TTL must be tuned to the stream's target duration and playlist window.\n\n### P2P\n\nP2P remains an acceleration layer, never the source of truth. HTTP CDN delivery is authoritative fallback. A production P2P deployment still needs controlled tracker/signalling and must be load-tested separately.\n\n## Environment\n\n| Variable | Default | Purpose |\n|---|---:|---|\n| LISTEN_ADDR | :8080 | HTTP listener |\n| ORIGIN_URL | empty | primary origin |\n| ORIGIN_URLS | empty | ordered origin list |\n| SHIELD_URLS | empty | upstream cache-shield URLs |\n| EDGE_URLS | empty | deterministic edge-routing pool |\n| ORIGIN_AUTH_TOKEN | empty | upstream bearer token |\n| PLAYBACK_SECRET | empty | optional HMAC playback auth |\n| PURGE_TOKEN | empty | purge API authorization |\n| CACHE_DIR | ./cache | cache directory |\n| MAX_CACHE_BYTES | 64 GiB | disk-backed cache capacity |
 | HOT_CACHE_BYTES | 32 GiB | bounded RAM hot-cache tier |\n| SEGMENT_TTL | 30s | segment cache TTL |\n| MANIFEST_TTL | 2s | playlist cache TTL |\n| STALE_IF_ERROR | 60s | stale retention after expiry |\n| MAX_SEGMENT_BYTES | 32 MiB | object size limit |\n| ORIGIN_TIMEOUT | 10s | upstream timeout |\n| MAX_IDLE_CONNS | 16384 | global upstream idle pool |\n| MAX_IDLE_CONNS_PER_HOST | 4096 | per-upstream idle pool |\n| MAX_CONNS_PER_HOST | 0 | per-upstream connection cap; 0 means unlimited |\n| RATE_LIMIT_PER_MIN | 1200 | per-IP rate |\n| RATE_LIMIT_BURST | 300 | per-IP burst |\n| ALLOWED_ORIGINS | empty | optional CORS allow-list |\n| NODE_ID | local | edge identity |
 | PUBLIC_BASE_URL | empty | canonical public media origin, e.g. https://media.testagram.site |
-| MEDIA_URL_PREFIX | /media | stable public media path prefix |\n\n## XClone / Testagram media compatibility
+| MEDIA_URL_PREFIX | /media | stable public media path prefix |
+| CLOUDINARY_CLOUD_NAME | empty | Cloudinary cloud used for media-origin fallback |
+| CLOUDINARY_IMAGE_BASE_URL | empty | explicit Cloudinary image delivery origin |
+| CLOUDINARY_VIDEO_BASE_URL | empty | explicit Cloudinary video/HLS delivery origin |
+| UPSTASH_REDIS_REST_URL | empty | optional Upstash Redis REST endpoint for control-plane coordination |
+| UPSTASH_REDIS_REST_TOKEN | empty | server-only Upstash Redis token |
+| UPSTASH_LOCK_TTL | 8s | distributed coordination lease |
+| TRUST_CLOUDFLARE | 0 | use CF-Connecting-IP for rate limiting when behind Cloudflare |\n\n## Testagram provider compatibility
+
+The CDN is designed to sit behind Cloudflare rather than replace it. Cloudflare remains the public DNS/WAF/proxy boundary; this service is the media shield/cache and delivery layer. Set TRUST_CLOUDFLARE=1 only when the service is reachable exclusively through trusted Cloudflare proxying, so CF-Connecting-IP can be used for per-viewer rate limiting.
+
+Cloudinary can be the media origin for image/video assets. Configure CLOUDINARY_CLOUD_NAME for conventional Cloudinary delivery URLs, or provide explicit CLOUDINARY_IMAGE_BASE_URL / CLOUDINARY_VIDEO_BASE_URL when Testagram uses custom delivery/transformation paths. The CDN caches the returned bytes; Cloudinary remains responsible for its asset/transformation layer.
+
+Upstash Redis is intentionally optional and is treated as a control-plane service, not a binary media store. The CDN disk/RAM tiers remain authoritative for media bytes. This prevents large videos and HLS segments from being serialized through Redis.
+
+Recommended production flow:
+
+Viewer -> Cloudflare DNS/WAF/proxy -> Testagram Edge CDN -> local hot/disk cache -> Cloudinary or Testagram origin
+
+Application metadata/auth -> Testagram backend/Supabase
+
+Control-plane coordination -> Upstash Redis
+
+This separation keeps Cloudflare at the public security boundary, Cloudinary at the asset/transformation layer, Redis in fast control-plane state, and this CDN responsible for absorbing repeated media delivery.
+
+## XClone / Testagram media compatibility
 
 The edge exposes a stable media contract so application rows can store CDN URLs instead of origin URLs.
 
