@@ -83,3 +83,17 @@ func TestMediaURLContract(t *testing.T) {
   t.Fatalf("unexpected media URL: %s", rr.Body.String())
  }
 }
+
+func TestR2MediaOrigin(t *testing.T) {
+ origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  if r.URL.Path != "/users/u1/avatar.webp" { t.Fatalf("unexpected R2 path: %s", r.URL.Path) }
+  w.Header().Set("Content-Type", "image/webp")
+  _, _ = w.Write(make([]byte, 2048))
+ }))
+ defer origin.Close()
+ cfg := testConfig(t)
+ cfg.R2PublicBaseURL = origin.URL
+ s := New(cfg)
+ data, ok := s.fetchR2("users/u1/avatar.webp")
+ if !ok || len(data) != 2048 { t.Fatalf("R2 media origin failed: ok=%v bytes=%d", ok, len(data)) }
+}
