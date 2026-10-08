@@ -20,7 +20,7 @@ func TestCleanAssetPath(t *testing.T){
 }
 func TestPlaybackToken(t *testing.T){
  s:=&Server{cfg:config.Config{PlaybackSecret:"secret"}}
- token:=signToken("live/a.ts","secret","9999999999")
+ token:="9999999999."+signToken("live/a.ts","secret","9999999999")
  if !s.authorized("live/a.ts",token){t.Fatal("valid token rejected")}
  if s.authorized("live/b.ts",token){t.Fatal("token accepted for another path")}
 }
