@@ -116,6 +116,7 @@ func TestTVSelfContainedIPTV(t *testing.T) {
 	cfg.PlaybackSecret = "test-secret"
 	cfg.TVPrefetchSeconds = 45 * time.Second
 	cfg.TVPrefetchConcurrency = 4
+	cfg.TVPrefetchTimeout = 5 * time.Second
 	s := New(cfg)
 	s.tvClient.Transport = tvRoundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		clone := r.Clone(r.Context())
