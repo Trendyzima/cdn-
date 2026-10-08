@@ -1,0 +1,10 @@
+name = "testagram-cdn"
+main = "worker.js"
+compatibility_date = "2026-10-08"
+
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "testagram-media"
+
+[observability]
+enabled = true
