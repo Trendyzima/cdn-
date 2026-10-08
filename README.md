@@ -10,7 +10,7 @@ The CDN uses a two-tier local cache: a larger disk-backed cache for breadth and 
 | CLOUDINARY_CLOUD_NAME | empty | Cloudinary cloud used for media-origin fallback |
 | CLOUDINARY_IMAGE_BASE_URL | empty | explicit Cloudinary image delivery origin |
 | CLOUDINARY_VIDEO_BASE_URL | empty | explicit Cloudinary video/HLS delivery origin |
-| UPSTASH_REDIS_REST_URL | empty | optional Upstash Redis REST endpoint for control-plane coordination |
+- `R2_PUBLIC_BASE_URL` — optional Cloudflare R2 public media origin; used after Cloudinary and before legacy Testagram origins.\n| UPSTASH_REDIS_REST_URL | empty | optional Upstash Redis REST endpoint for control-plane coordination |
 | UPSTASH_REDIS_REST_TOKEN | empty | server-only Upstash Redis token |
 | UPSTASH_LOCK_TTL | 8s | distributed coordination lease |
 | TRUST_CLOUDFLARE | 0 | use CF-Connecting-IP for rate limiting when behind Cloudflare |\n\n## Testagram provider compatibility
