@@ -40,7 +40,7 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   if len(directives) > 0 { fetchTarget = cloneURLWithQuery(target,directives) }
 
   cacheKey := "tv/"+scope+"/"+hashString(fetchTarget.String())+"/"+strings.Join(parts[2:],"/")
-  if e, data, err := s.cache.GetHot(cacheKey); err == nil {s.hits.Add(1);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("Content-Type",func()string{if strings.HasSuffix(strings.ToLower(rel),".m3u8"){return "application/vnd.apple.mpegurl; charset=utf-8"};return "application/octet-stream"}());w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0));w.Header().Set("ETag",etagFile(e));w.Header().Set("Age",age(e));if isPlaylistResponse(w.Header().Get("Content-Type"),data)&&acceptsGzip(r){w.Header().Set("Content-Encoding","gzip");gw:=gzip.NewWriter(w);w.WriteHeader(200);_,_=gw.Write(data);_=gw.Close();return};s.serveBytes(w,r,data);return};if e, err := s.cache.Get(cacheKey); err == nil {
+  if e, data, err := s.cache.GetHot(cacheKey); err == nil {s.hits.Add(1);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("Content-Type",func()string{if strings.HasSuffix(strings.ToLower(rel),".m3u8"){return "application/vnd.apple.mpegurl; charset=utf-8"};return "application/octet-stream"}());w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0));w.Header().Set("ETag",etagFile(e));w.Header().Set("Age",age(e));if isPlaylistResponse(w.Header().Get("Content-Type"),data)&&len(data)>=512&&acceptsGzip(r){w.Header().Set("Content-Encoding","gzip");w.Header().Set("X-Accel-Buffering","no");gw,_:=gzip.NewWriterLevel(w,gzip.BestSpeed);w.WriteHeader(200);_,_=gw.Write(data);_=gw.Close();return};s.serveBytes(w,r,data);return};if e, err := s.cache.Get(cacheKey); err == nil {
     s.hits.Add(1); w.Header().Set("X-Cache","HIT"); w.Header().Set("Cache-Status","testagram; hit")
     setType(w,rel); w.Header().Set("Cache-Control",tvCacheControl(rel,len(tvDeliveryDirectives(r.URL.Query(),strings.HasSuffix(strings.ToLower(target.Path),".m3u8")))>0)); w.Header().Set("ETag",etagFile(e)); w.Header().Set("Age",age(e)); if strings.HasSuffix(strings.ToLower(rel),".m3u8") { w.Header().Set("Vary","Accept-Encoding") }
     s.serveEntry(w,r,e); return
@@ -58,13 +58,13 @@ func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
   }
 
   w.Header().Set("X-Cache","MISS"); w.Header().Set("Cache-Status","testagram; fwd=uri-miss")
-  w.Header().Set("Content-Type",contentType); w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0)); w.Header().Set("ETag","\""+hash(data)+"\"")
+  w.Header().Set("Content-Type",contentType); if isPlaylistResponse(contentType,data) { w.Header().Set("X-Accel-Buffering","no") }; w.Header().Set("Cache-Control",tvCacheControl(rel,len(directives)>0)); w.Header().Set("ETag","\""+hash(data)+"\"")
   if isPlaylistResponse(contentType,data) { w.Header().Set("Vary","Accept-Encoding") }
   s.served.Add(uint64(len(data)))
   if r.Method == http.MethodHead { w.WriteHeader(200); return }
-  if isPlaylistResponse(contentType,data) && acceptsGzip(r) {
+  if isPlaylistResponse(contentType,data) && len(data)>=512 && acceptsGzip(r) {
     w.Header().Set("Content-Encoding","gzip")
-    gw:=gzip.NewWriter(w); w.WriteHeader(200); _,_=gw.Write(data); _=gw.Close(); return
+    w.Header().Set("X-Accel-Buffering","no"); gw,_:=gzip.NewWriterLevel(w,gzip.BestSpeed); w.WriteHeader(200); _,_=gw.Write(data); _=gw.Close(); return
   }
   w.WriteHeader(200); _,_ = w.Write(data)
 }
