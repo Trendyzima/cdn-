@@ -93,6 +93,12 @@ func(s *Server)route(w http.ResponseWriter,r *http.Request){
  w.Header().Set("Content-Type","application/json");_ = json.NewEncoder(w).Encode(map[string]any{"node_id":s.cfg.NodeID,"edge":s.cfg.EdgeURLs[idx],"index":idx})
 }
 
+func signToken(rel, secret, exp string) string {
+ mac := hmac.New(sha256.New, []byte(secret))
+ _, _ = mac.Write([]byte(exp + "|" + rel))
+ return exp + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
 func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
  if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
  raw:=strings.TrimSpace(r.URL.Query().Get("path"))
