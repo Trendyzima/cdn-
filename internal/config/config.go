@@ -8,6 +8,12 @@ type Config struct {
     OriginURLs []string
     PublicBaseURL string
     MediaURLPrefix string
+    CloudinaryCloudName string
+    CloudinaryImageBaseURL string
+    CloudinaryVideoBaseURL string
+    UpstashRedisURL string
+    UpstashRedisToken string
+    UpstashLockTTL time.Duration
     ShieldURLs []string
     EdgeURLs []string
     OriginAuthToken string
@@ -39,6 +45,12 @@ func Load() Config {
         OriginURLs: split(os.Getenv("ORIGIN_URLS")),
         PublicBaseURL: strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"),"/"),
         MediaURLPrefix: env("MEDIA_URL_PREFIX","/media"),
+        CloudinaryCloudName: os.Getenv("CLOUDINARY_CLOUD_NAME"),
+        CloudinaryImageBaseURL: strings.TrimRight(os.Getenv("CLOUDINARY_IMAGE_BASE_URL"),"/"),
+        CloudinaryVideoBaseURL: strings.TrimRight(os.Getenv("CLOUDINARY_VIDEO_BASE_URL"),"/"),
+        UpstashRedisURL: strings.TrimRight(os.Getenv("UPSTASH_REDIS_REST_URL"),"/"),
+        UpstashRedisToken: os.Getenv("UPSTASH_REDIS_REST_TOKEN"),
+        UpstashLockTTL: duration("UPSTASH_LOCK_TTL",8*time.Second),
         ShieldURLs: split(os.Getenv("SHIELD_URLS")),
         EdgeURLs: split(os.Getenv("EDGE_URLS")),
         OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
