@@ -14,6 +14,7 @@ type Config struct {
     UpstashRedisURL string
     UpstashRedisToken string
     UpstashLockTTL time.Duration
+    TrustCloudflare bool
     ShieldURLs []string
     EdgeURLs []string
     OriginAuthToken string
@@ -51,6 +52,7 @@ func Load() Config {
         UpstashRedisURL: strings.TrimRight(os.Getenv("UPSTASH_REDIS_REST_URL"),"/"),
         UpstashRedisToken: os.Getenv("UPSTASH_REDIS_REST_TOKEN"),
         UpstashLockTTL: duration("UPSTASH_LOCK_TTL",8*time.Second),
+        TrustCloudflare: os.Getenv("TRUST_CLOUDFLARE")=="1",
         ShieldURLs: split(os.Getenv("SHIELD_URLS")),
         EdgeURLs: split(os.Getenv("EDGE_URLS")),
         OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
