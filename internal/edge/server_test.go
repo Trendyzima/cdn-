@@ -49,3 +49,16 @@ func TestMediaCachePolicy(t *testing.T) {
  if got:=cacheControl("live/channel/seg-1.m4s"); !strings.Contains(got, "s-maxage=20") { t.Fatalf("segment cache policy changed unexpectedly: %s", got) }
  if got:=cacheControl("live/channel/index.m3u8"); !strings.Contains(got, "max-age=1") { t.Fatalf("manifest cache policy changed unexpectedly: %s", got) }
 }
+
+func TestLegacyMediaAliasesReachAssetHandler(t *testing.T) {
+ s := New(testConfig(t))
+ for _, route := range []string{
+  "/users/abc/image.webp",
+  "/profiles/abc/avatar.webp",
+  "/media/users/abc/image.webp",
+ } {
+  rr := httptest.NewRecorder()
+  s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", route, nil))
+  if rr.Code == 404 || rr.Code == 400 { t.Fatalf("legacy media route %s was rejected before reaching origin: status=%d", route, rr.Code) }
+ }
+}
