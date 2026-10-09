@@ -151,7 +151,13 @@ func (s *Server) prefetchTVSegments(scope string, playlistURL *url.URL, data []b
 	limit := s.cfg.TVPrefetchConcurrency
 	if limit < 1 { limit = 1 }
 	if limit > 4 { limit = 4 }
-	warmupCtx, cancel := context.WithTimeout(context.Background(), s.cfg.TVPrefetchTimeout)
+	timeout := s.cfg.TVPrefetchTimeout
+	// A zero-value Config is valid in tests and embedding applications. Never
+	// let a zero timeout cancel prefetch before the first segment can be warmed.
+	if timeout <= 0 {
+		timeout = 12 * time.Second
+	}
+	warmupCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	jobs := make(chan struct { target *url.URL; key, name string; duration time.Duration })
