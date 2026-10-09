@@ -213,3 +213,13 @@ func TestTVPrefetchMetricsAreExposed(t *testing.T) {
   if !strings.Contains(body, metric) { t.Errorf("metrics response missing %q", metric) }
  }
 }
+
+func TestHealthIdentifiesCDNService(t *testing.T) {
+ s := New(testConfig(t))
+ rr := httptest.NewRecorder()
+ s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+ if rr.Code != http.StatusOK { t.Fatalf("health status=%d body=%s", rr.Code, rr.Body.String()) }
+ var body map[string]any
+ if err := json.NewDecoder(rr.Body).Decode(&body); err != nil { t.Fatal(err) }
+ if body["ok"] != true || body["service"] != "testagram-cdn" { t.Fatalf("unexpected health contract: %#v", body) }
+}
