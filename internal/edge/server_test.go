@@ -182,3 +182,33 @@ func TestIPTVCORSContract(t *testing.T) {
  s.Handler().ServeHTTP(blocked, blockedReq)
  if blocked.Code != http.StatusForbidden { t.Fatalf("blocked preflight status=%d", blocked.Code) }
 }
+
+func TestTVPrefetchMetricsAreExposed(t *testing.T) {
+ s := New(testConfig(t))
+ s.tvPrefetchHits.Store(2)
+ s.tvPrefetchMisses.Store(3)
+ s.tvPrefetchSuccesses.Store(2)
+ s.tvPrefetchFailures.Store(1)
+ s.tvPrefetchWarmedSeconds.Store(30)
+
+ health := httptest.NewRecorder()
+ s.health(health, httptest.NewRequest("GET", "/healthz", nil))
+ var payload map[string]any
+ if err := json.Unmarshal(health.Body.Bytes(), &payload); err != nil { t.Fatalf("decode health payload: %v", err) }
+ for _, key := range []string{"tv_prefetch_hits", "tv_prefetch_misses", "tv_prefetch_successes", "tv_prefetch_failures", "tv_prefetch_warmed_seconds"} {
+  if _, ok := payload[key]; !ok { t.Errorf("health response missing %q", key) }
+ }
+
+ metrics := httptest.NewRecorder()
+ s.metrics(metrics, httptest.NewRequest("GET", "/metrics", nil))
+ body := metrics.Body.String()
+ for _, metric := range []string{
+  "testagram_edge_tv_prefetch_cache_hits_total 2",
+  "testagram_edge_tv_prefetch_cache_misses_total 3",
+  "testagram_edge_tv_prefetch_successes_total 2",
+  "testagram_edge_tv_prefetch_failures_total 1",
+  "testagram_edge_tv_prefetch_warmed_seconds_total 30",
+ } {
+  if !strings.Contains(body, metric) { t.Errorf("metrics response missing %q", metric) }
+ }
+}
