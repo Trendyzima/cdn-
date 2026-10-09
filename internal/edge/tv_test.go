@@ -88,6 +88,6 @@ func TestTVPrefetchParsesThirtySecondsAndExtensionlessSegments(t *testing.T) {
 
 func TestTVPrefetchDefaults(t *testing.T) {
   cfg := config.Load()
-  if cfg.TVPrefetchSeconds < 60*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
+  if cfg.TVPrefetchSeconds < 30*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
   if cfg.TVPrefetchConcurrency < 1 || cfg.TVPrefetchConcurrency > 4 { t.Fatalf("TV prefetch concurrency must remain bounded: %d", cfg.TVPrefetchConcurrency) }
 }
