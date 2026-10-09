@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  logical-500k:
+  logical-1m:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -20,7 +20,7 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-      - name: 500k logical viewer fan-out
+      - name: 1M logical viewer fan-out
         env:
           CAPACITY_TEST: "1"
-        run: go test ./internal/edge -run TestCapacity500kLogicalViewers -count=1 -timeout 10m -v
+        run: go test ./internal/edge -run TestCapacity1MLogicalViewers -count=1 -timeout 10m -v
