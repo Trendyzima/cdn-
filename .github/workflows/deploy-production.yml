@@ -1,77 +1,37 @@
-name: Deploy Go CDN Production
+name: Standalone CDN Source Verification (Deployment Lives in XClone)
+
 on:
   push:
     branches: [main]
-    paths: ["cmd/**","internal/**","Dockerfile","go.mod","go.sum",".github/workflows/deploy-production.yml"]
+    paths: ["cmd/**", "internal/**", "Dockerfile", "go.mod", "go.sum", ".github/workflows/deploy-production.yml"]
+  pull_request:
+    paths: ["cmd/**", "internal/**", "Dockerfile", "go.mod", "go.sum", ".github/workflows/deploy-production.yml"]
   workflow_dispatch:
+
 permissions:
   contents: read
-  packages: write
+
 jobs:
-  build-publish:
+  verify:
     runs-on: ubuntu-24.04
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v3
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: actions/setup-go@v5
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish
-        id: meta
-        env:
-          IMAGE: ghcr.io/trendyzima/testagram-edge
+          go-version-file: go.mod
+      - name: Unit and integration tests
+        run: go test ./...
+      - name: Race detector
+        run: go test -race ./...
+      - name: Static analysis
+        run: go vet ./...
+      - name: Build container
+        run: docker build --pull -t testagram-cdn:ci -f Dockerfile .
+      - name: Explain canonical deployment owner
         run: |
-          set -euo pipefail
-          docker build --pull -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:main" .
-          docker push "$IMAGE:$GITHUB_SHA"
-          docker push "$IMAGE:main"
-          echo "image=$IMAGE:$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-  deploy:
-    needs: build-publish
-    runs-on: ubuntu-24.04
-    environment: production
-    steps:
-      - name: Validate production deployment contract
-        env:
-          HOST: ${{ secrets.CDN_DEPLOY_HOST }}
-          USER: ${{ secrets.CDN_DEPLOY_USER }}
-          KEY: ${{ secrets.CDN_DEPLOY_SSH_KEY }}
-          TOKEN: ${{ secrets.CDN_DEPLOY_GHCR_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "$HOST" || { echo "::error::CDN_DEPLOY_HOST is not configured"; exit 1; }
-          test -n "$USER" || { echo "::error::CDN_DEPLOY_USER is not configured"; exit 1; }
-          test -n "$KEY" || { echo "::error::CDN_DEPLOY_SSH_KEY is not configured"; exit 1; }
-          test -n "$TOKEN" || { echo "::error::CDN_DEPLOY_GHCR_TOKEN is not configured"; exit 1; }
-      - name: Install SSH key
-        env:
-          SSH_KEY: ${{ secrets.CDN_DEPLOY_SSH_KEY }}
-        run: |
-          install -m 700 -d "$HOME/.ssh"
-          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/cdn_deploy"
-          chmod 600 "$HOME/.ssh/cdn_deploy"
-      - name: Deploy
-        env:
-          HOST: ${{ secrets.CDN_DEPLOY_HOST }}
-          USER: ${{ secrets.CDN_DEPLOY_USER }}
-          PORT: ${{ secrets.CDN_DEPLOY_PORT }}
-          TOKEN: ${{ secrets.CDN_DEPLOY_GHCR_TOKEN }}
-          IMAGE: ${{ needs.build-publish.outputs.image }}
-        run: |
-          set -euo pipefail
-          if [ -z "$PORT" ]; then PORT=22; fi
-          ssh -i "$HOME/.ssh/cdn_deploy" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -p "$PORT" "$USER@$HOST" "echo '$TOKEN' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin && docker pull '$IMAGE' && docker rm -f testagram-edge 2>/dev/null || true && docker run -d --name testagram-edge --restart unless-stopped --network host --env-file /etc/testagram-edge.env -v /var/lib/testagram-edge/cache:/app/cache '$IMAGE'"
-      - name: Verify public deployment
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --max-time 20 -D /tmp/headers -o /tmp/body https://media.testagram.site/healthz
-          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/headers
-          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-10-08-go-edge-iptv-v1[[:space:]]*$' /tmp/headers
-          grep -q '"ok":true' /tmp/body
+          echo "Standalone source verification passed."
+          echo "Production deployment is owned by Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr."
+          echo "No SSH host/user/key, GHCR token, Cloudflare token, or CDN deployment secret is requested here."
