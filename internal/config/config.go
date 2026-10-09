@@ -68,7 +68,7 @@ func Load() Config {
         MaxCacheBytes: integer("MAX_CACHE_BYTES",8<<30),
         HotCacheBytes: integer("HOT_CACHE_BYTES",512<<20),
         SegmentTTL: duration("SEGMENT_TTL",120*time.Second),
-        TVPrefetchSeconds: duration("TV_PREFETCH_SECONDS",60*time.Second),
+        TVPrefetchSeconds: duration("TV_PREFETCH_SECONDS",30*time.Second),
         TVPrefetchConcurrency: int(integer("TV_PREFETCH_CONCURRENCY",4)),
         TVPrefetchTimeout: duration("TV_PREFETCH_TIMEOUT",8*time.Second),
         ManifestTTL: duration("MANIFEST_TTL",2*time.Second),
