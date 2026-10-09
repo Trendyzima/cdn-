@@ -2,7 +2,13 @@ name: Deploy Go CDN Production
 on:
   push:
     branches: [main]
-    paths: ["cmd/**","internal/**","Dockerfile","go.mod","go.sum",".github/workflows/deploy-production.yml"]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "!internal/**/*_test.go"
+      - "Dockerfile"
+      - "go.mod"
+      - "go.sum"
   workflow_dispatch:
 permissions:
   contents: read
