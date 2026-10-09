@@ -12,10 +12,10 @@ import (
  "github.com/Trendyzima/cdn-/internal/config"
 )
 
-// CAPACITY_TEST=1 enables the 500k logical-viewer test. It is intentionally
+// CAPACITY_TEST=1 enables the one-million logical-viewer test. It is intentionally
 // opt-in because CI runners are verification machines, not production load generators.
-func TestCapacity500kLogicalViewers(t *testing.T) {
- if os.Getenv("CAPACITY_TEST") != "1" { t.Skip("set CAPACITY_TEST=1 to run the 500k capacity test") }
+func TestCapacity1MLogicalViewers(t *testing.T) {
+ if os.Getenv("CAPACITY_TEST") != "1" { t.Skip("set CAPACITY_TEST=1 to run the one-million logical-viewer test") }
 
  var originCalls atomic.Int64
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
@@ -33,7 +33,7 @@ func TestCapacity500kLogicalViewers(t *testing.T) {
  }
  s:=New(cfg)
  h:=http.HandlerFunc(s.asset)
- const viewers=500000
+ const viewers=1000000
  const workers=4096
  jobs:=make(chan struct{},workers)
  var wg sync.WaitGroup
@@ -54,6 +54,6 @@ func TestCapacity500kLogicalViewers(t *testing.T) {
  for i:=0;i<viewers;i++{jobs<-struct{}{}}
  close(jobs)
  wg.Wait()
- if got:=ok.Load();got!=viewers{t.Fatalf("500k logical viewer simulation: %d/%d succeeded; first failure HTTP status=%d; failures=%d",got,viewers,firstFailure.Load(),failures.Load())}
+ if got:=ok.Load();got!=viewers{t.Fatalf("one-million logical viewer simulation: %d/%d succeeded; first failure HTTP status=%d; failures=%d",got,viewers,firstFailure.Load(),failures.Load())}
  if got:=originCalls.Load();got!=1{t.Fatalf("cache fanout regression: expected 1 origin fetch, got %d",got)}
 }
