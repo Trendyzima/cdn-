@@ -103,7 +103,7 @@ func tvCacheKey(scope string, target *url.URL, name string) string {
 }
 
 // Prefetch a rolling window of upcoming live media. We warm enough advertised
-// segments to cover the configured window (45s by default), then continue warming
+// segments to cover the configured window (30s by default), then continue warming
 // on each playlist refresh. The playlist itself stays short-lived and is never
 // cached for the duration of the media window.
 func parseTVPrefetchCandidates(scope string, playlistURL *url.URL, data []byte, target time.Duration) []struct { target *url.URL; key, name string; duration time.Duration } {
