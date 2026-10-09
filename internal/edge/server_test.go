@@ -206,6 +206,7 @@ func TestTVPrefetchMetricsAreExposed(t *testing.T) {
   "testagram_edge_tv_prefetch_cache_hits_total 2",
   "testagram_edge_tv_prefetch_cache_misses_total 3",
   "testagram_edge_tv_prefetch_successes_total 2",
+  "testagram_edge_tv_prefetch_success_total 2",
   "testagram_edge_tv_prefetch_failures_total 1",
   "testagram_edge_tv_prefetch_warmed_seconds_total 30",
  } {
