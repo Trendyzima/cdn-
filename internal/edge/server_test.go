@@ -40,7 +40,7 @@ func testConfig(t *testing.T)config.Config{
  return config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
   MaxSegmentBytes:1<<20,NodeID:"test",OriginURLs:[]string{"http://127.0.0.1:1"},
-  PlaybackSecret:"secret",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,
+  PlaybackSecret:"secret",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,TVPrefetchTimeout:12*time.Second,
  }
 }
 func TestMediaCachePolicy(t *testing.T) {
