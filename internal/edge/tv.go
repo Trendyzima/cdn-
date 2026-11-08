@@ -110,28 +110,32 @@ func parseTVPrefetchCandidates(scope string, playlistURL *url.URL, data []byte, 
 	lines := strings.Split(string(data), "\n")
 	out := make([]struct { target *url.URL; key, name string; duration time.Duration }, 0, 16)
 	var duration, total time.Duration
+	waitingForMediaURI := false
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#EXT-X-MAP:") && strings.Contains(line, "URI=") {
-			if strings.HasPrefix(line, "#EXT-X-MAP:") { duration = 0 }
-			continue
-		}
+		if line == "" { continue }
 		if strings.HasPrefix(line, "#EXTINF:") {
 			value := strings.TrimPrefix(line, "#EXTINF:")
 			if comma := strings.IndexByte(value, ','); comma >= 0 { value = value[:comma] }
 			if seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err == nil && seconds > 0 && seconds < 120 {
 				duration = time.Duration(seconds * float64(time.Second))
-			} else { duration = 0 }
+				waitingForMediaURI = true
+			} else {
+				duration = 0
+				waitingForMediaURI = false
+			}
 			continue
 		}
 		if strings.HasPrefix(line, "#") { continue }
+		if !waitingForMediaURI { continue }
 		resolved, err := playlistURL.Parse(line)
+		waitingForMediaURI = false
 		if err != nil || resolved.Scheme != "https" || isPrivateHost(resolved.Hostname()) { duration = 0; continue }
 		name := path.Base(resolved.Path)
 		if name == "." || name == "/" || name == "" { name = "segment" }
 		lower := strings.ToLower(resolved.Path)
-		// HLS media URIs are not required to carry .ts/.m4s extensions. Exclude
-		// playlists by path/content convention, but allow extensionless segments.
+		// HLS media URIs are not required to carry .ts/.m4s extensions. The
+		// EXTINF context, rather than a filename suffix, identifies media.
 		if strings.HasSuffix(lower, ".m3u8") || strings.HasSuffix(lower, ".mpd") { duration = 0; continue }
 		out = append(out, struct { target *url.URL; key, name string; duration time.Duration }{
 			target: resolved, key: tvCacheKey(scope, resolved, name), name: name, duration: duration,
