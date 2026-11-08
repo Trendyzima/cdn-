@@ -86,6 +86,13 @@ func TestTVPrefetchParsesThirtySecondsAndExtensionlessSegments(t *testing.T) {
 	}
 }
 
+func TestTVPrefetchDoesNotTreatVariantPlaylistAsMedia(t *testing.T) {
+	base, _ := url.Parse("https://origin.example/live/master.m3u8")
+	playlist := []byte("#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=800000\\nvariant-one\\n#EXT-X-STREAM-INF:BANDWIDTH=1600000\\nvariant-two.m3u8\\n")
+	candidates := parseTVPrefetchCandidates("channel-1", base, playlist, 30*time.Second)
+	if len(candidates) != 0 { t.Fatalf("master playlist variant URIs must not be prefetched as media: %#v", candidates) }
+}
+
 func TestTVPrefetchDefaults(t *testing.T) {
   cfg := config.Load()
   if cfg.TVPrefetchSeconds < 30*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
