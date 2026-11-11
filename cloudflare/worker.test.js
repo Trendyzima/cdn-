@@ -23,7 +23,7 @@ test("serves native /v1 media from R2", async () => {
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "image/webp");
   assert.equal(res.headers.get("x-testagram-cdn"), "r2-edge");
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
+  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
   assert.equal(await res.text(), "test-image");
 });
 
@@ -41,7 +41,7 @@ test("missing objects remain a real 404", async () => {
   const env = { MEDIA_BUCKET: { get: async () => null }};
   const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/missing.webp"), env);
   assert.equal(res.status, 404);
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
+  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
 });
 
 test("health and readiness expose the deployed Worker identity", async () => {
@@ -50,8 +50,8 @@ test("health and readiness expose the deployed Worker identity", async () => {
   const ready = await worker.fetch(new Request("https://media.testagram.site/readyz"), env);
   assert.equal(health.status, 200);
   assert.equal(ready.status, 200);
-  assert.equal(health.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
-  assert.equal(ready.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
+  assert.equal(health.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
+  assert.equal(ready.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
 });
 
 test("range requests return HTTP 206", async () => {
