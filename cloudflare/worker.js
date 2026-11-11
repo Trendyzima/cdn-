@@ -1,4 +1,4 @@
-const WORKER_VERSION = "2026-10-08-r2-cdn-lockdown-1";
+const WORKER_VERSION = "2026-11-11-r2-viewer-scoped-token-3";
 const LEGACY_PREFIXES = ["/media/","/users/","/profiles/","/uploads/","/avatars/","/covers/","/photos/","/videos/"];
 
 function keyFromPath(p) {
@@ -19,14 +19,36 @@ function keyFromPath(p) {
   return decoded.join("/");
 }
 async function authorizedPrivate(key, token, secret) {
-  if (!secret) return { ok: token === "", private: false };
+  // This Worker is the protected R2 delivery surface. Never interpret a
+  // missing signing secret as permission to serve every object publicly.
+  // Public assets must use the explicitly public delivery path, not this
+  // private-media Worker.
+  if (typeof secret !== "string" || secret.length < 32) return { ok: false, private: true };
   if (!token) return { ok: false, private: true };
   const parts = token.split(".");
-  if (parts.length !== 2 || !/^[0-9]+$/.test(parts[0]) || !/^[0-9a-f]{64}$/.test(parts[1])) return { ok: false, private: true };
+  if (!/^[0-9]+$/.test(parts[0] || "")) return { ok: false, private: true };
   const exp = Number(parts[0]);
   if (!Number.isSafeInteger(exp) || exp < Math.floor(Date.now() / 1000)) return { ok: false, private: true };
+  let message;
+  let signature;
+  if (parts.length === 4) {
+    const viewerId = parts[1];
+    const visibility = parts[2];
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(viewerId) || visibility !== "private" || !/^[0-9a-f]{64}$/.test(parts[3])) {
+      return { ok: false, private: true };
+    }
+    message = key + "|" + viewerId + "|" + visibility + "|" + parts[0];
+    signature = parts[3];
+  } else if (parts.length === 2 && /^[0-9a-f]{64}$/.test(parts[1])) {
+    // Backward compatibility for already-issued short-lived links. New Backend
+    // assertions must use the viewer- and visibility-scoped four-part format.
+    message = key + "|" + parts[0];
+    signature = parts[1];
+  } else {
+    return { ok: false, private: true };
+  }
   const keyData = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), {name:"HMAC",hash:"SHA-256"}, false, ["verify"]);
-  const valid = await crypto.subtle.verify("HMAC", keyData, hexToBytes(parts[1]), new TextEncoder().encode(key + "|" + parts[0]));
+  const valid = await crypto.subtle.verify("HMAC", keyData, hexToBytes(signature), new TextEncoder().encode(message));
   return { ok: valid, private: true };
 }
 function hexToBytes(hex) {

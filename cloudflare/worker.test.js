@@ -15,33 +15,36 @@ function makeObject(key, body, type = "image/webp") {
 }
 
 test("serves native /v1 media from R2", async () => {
-  const env = { MEDIA_BUCKET: { get: async (key) => {
+  const key = "users/u1/avatar.webp";
+  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async (key) => {
     assert.equal(key, "users/u1/avatar.webp");
     return makeObject(key, "test-image");
   }}};
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/avatar.webp"), env);
+  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/avatar.webp?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600)), env);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "image/webp");
   assert.equal(res.headers.get("x-testagram-cdn"), "r2-edge");
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
+  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
   assert.equal(await res.text(), "test-image");
 });
 
 test("legacy aliases converge on the same R2 key", async () => {
-  const env = { MEDIA_BUCKET: { get: async (key) => {
+  const key = "users/u1/avatar.webp";
+  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async (key) => {
     assert.equal(key, "users/u1/avatar.webp");
     return makeObject(key, "legacy-image");
   }}};
-  const res = await worker.fetch(new Request("https://media.testagram.site/users/u1/avatar.webp"), env);
+  const res = await worker.fetch(new Request("https://media.testagram.site/users/u1/avatar.webp?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600)), env);
   assert.equal(res.status, 200);
   assert.equal(await res.text(), "legacy-image");
 });
 
 test("missing objects remain a real 404", async () => {
-  const env = { MEDIA_BUCKET: { get: async () => null }};
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/missing.webp"), env);
+  const key = "users/u1/missing.webp";
+  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async () => null }};
+  const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600)), env);
   assert.equal(res.status, 404);
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
+  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
 });
 
 test("health and readiness expose the deployed Worker identity", async () => {
@@ -50,16 +53,17 @@ test("health and readiness expose the deployed Worker identity", async () => {
   const ready = await worker.fetch(new Request("https://media.testagram.site/readyz"), env);
   assert.equal(health.status, 200);
   assert.equal(ready.status, 200);
-  assert.equal(health.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
-  assert.equal(ready.headers.get("x-testagram-cdn-version"), "2026-10-08-r2-cdn-lockdown-1");
+  assert.equal(health.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
+  assert.equal(ready.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
 });
 
 test("range requests return HTTP 206", async () => {
-  const env = { MEDIA_BUCKET: { get: async (_key, options) => {
+  const key = "users/u1/video.mp4";
+  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async (_key, options) => {
     assert.deepEqual(options.range, { offset: 0, length: 4 });
     return { ...makeObject("users/u1/video.mp4", "test-video", "video/mp4"), range: { offset: 0, length: 4 } };
   }}};
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/video.mp4", { headers: { Range: "bytes=0-3" }}), env);
+  const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600), { headers: { Range: "bytes=0-3" }}), env);
   assert.equal(res.status, 206);
   assert.equal(res.headers.get("content-range"), "bytes 0-3/10");
   assert.equal(res.headers.get("accept-ranges"), "bytes");
@@ -78,8 +82,38 @@ function playbackToken(key, secret, exp) {
   return String(exp) + "." + createHmac("sha256", secret).update(key + "|" + String(exp)).digest("hex");
 }
 
+
+function viewerScopedPlaybackToken(key, viewerId, visibility, secret, exp) {
+  const value = String(exp);
+  const message = key + "|" + viewerId + "|" + visibility + "|" + value;
+  return value + "." + viewerId + "." + visibility + "." + createHmac("sha256", secret).update(message).digest("hex");
+}
+
+test("viewer-scoped private playback tokens are accepted and bound to object, viewer and visibility", async () => {
+  const secret = "0123456789abcdef0123456789abcdef";
+  const key = "users/u1/private.webp";
+  const exp = Math.floor(Date.now() / 1000) + 600;
+  const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async (requested) => {
+    assert.equal(requested, key);
+    return makeObject(key, "scoped-private-image");
+  }}};
+  const token = viewerScopedPlaybackToken(key, "viewer-42", "private", secret, exp);
+  const valid = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + token), env);
+  assert.equal(valid.status, 200);
+  assert.equal(valid.headers.get("cache-control"), "private, no-store");
+
+  const wrongViewer = viewerScopedPlaybackToken(key, "viewer-43", "private", secret, exp);
+  const tampered = token.replace("viewer-42", "viewer-43");
+  assert.notEqual(tampered, wrongViewer);
+  const wrongVisibility = viewerScopedPlaybackToken(key, "viewer-42", "public", secret, exp);
+  for (const invalid of [tampered, wrongVisibility]) {
+    const response = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + invalid), env);
+    assert.equal(response.status, 401);
+  }
+});
+
 test("private media requires a valid expiry-bound playback token", async () => {
-  const secret = "test-secret";
+  const secret = "0123456789abcdef0123456789abcdef";
   const key = "users/u1/private.webp";
   const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async (requested) => {
     assert.equal(requested, key);
@@ -114,10 +148,29 @@ test("encoded and double-encoded traversal never reaches R2", async () => {
 
 test("malformed and multi-range requests fail closed", async () => {
   let calls = 0;
-  const env = { MEDIA_BUCKET: { get: async () => { calls++; return null; } } };
+  const key = "users/u1/video.mp4";
+  const secret = "0123456789abcdef0123456789abcdef";
+  const token = playbackToken(key, secret, Math.floor(Date.now()/1000)+600);
+  const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async () => { calls++; return null; } } };
   for (const rangeHeader of ["bytes=", "bytes=-0", "bytes=5-4", "bytes=0-1,4-5", "items=0-1"]) {
-    const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/video.mp4", {headers:{Range:rangeHeader}}), env);
+    const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + token, {headers:{Range:rangeHeader}}), env);
     assert.equal(res.status, 416);
   }
   assert.equal(calls, 0);
+});
+
+test("private R2 worker fails closed when signing secret is missing", async () => {
+  let reads = 0;
+  const env = { MEDIA_BUCKET: { get: async () => { reads++; return makeObject("users/u1/private.webp", "private"); } } };
+  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/private.webp"), env);
+  assert.equal(res.status, 401);
+  assert.equal(reads, 0);
+});
+
+test("private R2 worker rejects weak signing secrets", async () => {
+  let reads = 0;
+  const env = { PLAYBACK_SECRET: "too-short", MEDIA_BUCKET: { get: async () => { reads++; return makeObject("users/u1/private.webp", "private"); } } };
+  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/private.webp?token=1234567890.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), env);
+  assert.equal(res.status, 401);
+  assert.equal(reads, 0);
 });
