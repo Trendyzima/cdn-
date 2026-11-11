@@ -184,6 +184,17 @@ func TestPublicAuthorizationDenialCannotFailOverToPublicCache(t *testing.T) {
  if rr.Code!=http.StatusBadGateway||secondHit{t.Fatalf("origin denial failed open: status=%d secondOriginHit=%v",rr.Code,secondHit)}
 }
 
+func TestUnknownVisibilityCannotFailOverToPublicOrigin(t *testing.T) {
+ secondHit:=false
+ unknown:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.Write([]byte("unclassified"))}))
+ defer unknown.Close()
+ public:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){secondHit=true;w.Header().Set("X-Testagram-Visibility","public");w.Write([]byte("fallback"))}))
+ defer public.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{unknown.URL,public.URL}
+ s:=New(cfg);rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/users/u1/avatar.webp",nil))
+ if rr.Code==http.StatusOK||secondHit{t.Fatalf("unknown visibility failed open: status=%d secondOriginHit=%v",rr.Code,secondHit)}
+}
+
 func TestViewerAuthorizationIsNotForwardedAcrossOriginRedirect(t *testing.T) {
  leaked:=false
  attacker:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){leaked=true;w.WriteHeader(http.StatusOK)}))
