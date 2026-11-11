@@ -79,7 +79,7 @@ function playbackToken(key, secret, exp) {
 }
 
 test("private media requires a valid expiry-bound playback token", async () => {
-  const secret = "test-secret";
+  const secret = "0123456789abcdef0123456789abcdef";
   const key = "users/u1/private.webp";
   const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async (requested) => {
     assert.equal(requested, key);
@@ -120,4 +120,20 @@ test("malformed and multi-range requests fail closed", async () => {
     assert.equal(res.status, 416);
   }
   assert.equal(calls, 0);
+});
+
+test("private R2 worker fails closed when signing secret is missing", async () => {
+  let reads = 0;
+  const env = { MEDIA_BUCKET: { get: async () => { reads++; return makeObject("users/u1/private.webp", "private"); } } };
+  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/private.webp"), env);
+  assert.equal(res.status, 401);
+  assert.equal(reads, 0);
+});
+
+test("private R2 worker rejects weak signing secrets", async () => {
+  let reads = 0;
+  const env = { PLAYBACK_SECRET: "too-short", MEDIA_BUCKET: { get: async () => { reads++; return makeObject("users/u1/private.webp", "private"); } } };
+  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/private.webp?token=1234567890.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), env);
+  assert.equal(res.status, 401);
+  assert.equal(reads, 0);
 });
