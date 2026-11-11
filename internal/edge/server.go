@@ -135,6 +135,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
   return
  }
  viewerAuthorization:=strings.TrimSpace(r.Header.Get("Authorization"))
+ if len(viewerAuthorization)>8192 || strings.ContainsAny(viewerAuthorization,"\\r\\n") { http.Error(w,"invalid viewer authorization header",http.StatusBadRequest); return }
  if viewerAuthorization!="" {
   if strings.TrimSpace(s.cfg.OriginAuthToken)=="" {
    http.Error(w,"trusted origin authentication is not configured",http.StatusServiceUnavailable)
@@ -267,7 +268,8 @@ func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization stri
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   req.Header.Set("X-Testagram-Viewer-Authorization",viewerAuthorization)
   req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)
-  resp,e:=s.client.Do(req);if e!=nil{lastErr=e;continue}
+  privateClient:=&http.Client{Transport:s.client.Transport,Timeout:s.cfg.OriginTimeout,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
+  resp,e:=privateClient.Do(req);if e!=nil{lastErr=e;continue}
   if resp.StatusCode<200||resp.StatusCode>=300 {resp.Body.Close();lastErr=fmt.Errorf("origin authorization returned %d",resp.StatusCode);continue}
   data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1))
   contentType:=resp.Header.Get("Content-Type");resp.Body.Close()
