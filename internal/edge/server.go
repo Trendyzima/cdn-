@@ -305,7 +305,7 @@ func cleanAssetPath(p string)(string,bool){
  rel:=strings.TrimPrefix(c,"/")
  root:=strings.SplitN(rel,"/",2)[0]
  switch root {
- case "users","profiles","uploads","avatars","covers","photos","videos","media","live","tv":
+ case "users","profiles","uploads","avatars","covers","photos","videos","media","live","tv","public":
  default: return "",false
  }
  return rel,true
