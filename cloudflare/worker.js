@@ -19,7 +19,11 @@ function keyFromPath(p) {
   return decoded.join("/");
 }
 async function authorizedPrivate(key, token, secret) {
-  if (!secret) return { ok: token === "", private: false };
+  // This Worker is the protected R2 delivery surface. Never interpret a
+  // missing signing secret as permission to serve every object publicly.
+  // Public assets must use the explicitly public delivery path, not this
+  // private-media Worker.
+  if (typeof secret !== "string" || secret.length < 32) return { ok: false, private: true };
   if (!token) return { ok: false, private: true };
   const parts = token.split(".");
   if (parts.length !== 2 || !/^[0-9]+$/.test(parts[0]) || !/^[0-9a-f]{64}$/.test(parts[1])) return { ok: false, private: true };
