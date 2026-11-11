@@ -266,7 +266,7 @@ func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization stri
   req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   req.Header.Set("X-Testagram-Viewer-Authorization",viewerAuthorization)
-  req.Header.Set("Authorization","Bearer "+s.cfg.OriginAuthToken)
+  req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)
   resp,e:=s.client.Do(req);if e!=nil{lastErr=e;continue}
   if resp.StatusCode<200||resp.StatusCode>=300 {resp.Body.Close();lastErr=fmt.Errorf("origin authorization returned %d",resp.StatusCode);continue}
   data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1))
