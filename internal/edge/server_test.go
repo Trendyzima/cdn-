@@ -161,6 +161,26 @@ func TestViewerAuthorizedMediaBypassesCacheAndForwardsIdentity(t *testing.T) {
  if rr.Header().Get("Cache-Control")!="private, no-store"||rr.Header().Get("X-Cache")!="BYPASS"{t.Fatalf("private cache policy incorrect: %+v",rr.Header())}
 }
 
+func TestViewerAuthorizationIsNotForwardedAcrossOriginRedirect(t *testing.T) {
+ leaked:=false
+ attacker:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){leaked=true;w.WriteHeader(http.StatusOK)}))
+ defer attacker.Close()
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){http.Redirect(w,r,attacker.URL+"/capture",http.StatusFound)}))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.OriginAuthToken="origin-secret"
+ s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer sensitive-appwrite-session")
+ s.Handler().ServeHTTP(rr,req)
+ if leaked {t.Fatal("viewer authorization followed an origin redirect to another host")}
+ if rr.Code==http.StatusOK {t.Fatalf("redirect unexpectedly authorized request: %d",rr.Code)}
+}
+
+func TestReadyRequiresOriginServiceCredential(t *testing.T) {
+ cfg:=testConfig(t);cfg.OriginAuthToken=""
+ s:=New(cfg);rr:=httptest.NewRecorder()
+ s.ready(rr,httptest.NewRequest(http.MethodGet,"/readyz",nil))
+ if rr.Code!=http.StatusServiceUnavailable {t.Fatalf("ready status=%d body=%s",rr.Code,rr.Body.String())}
+}
+
 func TestPublicCacheRequiresExplicitOriginVisibility(t *testing.T) {
  for _,visibility:=range []string{"","private","public"} {
   origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){if visibility!=""{w.Header().Set("X-Testagram-Visibility",visibility)};w.Write([]byte("asset"))}))
