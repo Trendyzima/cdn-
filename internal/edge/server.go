@@ -107,18 +107,12 @@ func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
  }
  mediaURL:=base+strings.TrimRight(s.cfg.MediaURLPrefix,"/")+"/"+rel
  private:=r.URL.Query().Get("private")=="1"
- if private && strings.TrimSpace(s.cfg.PlaybackSecret)=="" {
-  http.Error(w,"private media signing is not configured",http.StatusServiceUnavailable)
+ if _,present:=r.URL.Query()["token"]; present {
+  http.Error(w,"playback tokens are no longer supported; use viewer authorization",http.StatusBadRequest)
   return
  }
- var expires any
- if private {
-  exp:=time.Now().Add(10*time.Minute).Unix()
-  expText:=strconv.FormatInt(exp,10);mediaURL+="?token="+url.QueryEscape(expText+"."+signToken(rel,s.cfg.PlaybackSecret,expText))
-  expires=exp
- }
  w.Header().Set("Content-Type","application/json")
- _=json.NewEncoder(w).Encode(map[string]any{"url":mediaURL,"path":rel,"expires_at":expires,"public":!private})
+ _=json.NewEncoder(w).Encode(map[string]any{"url":mediaURL,"path":rel,"expires_at":nil,"public":!private,"requires_auth":private})
 }
 
 func(s *Server)mediaAlias(w http.ResponseWriter,r *http.Request){
@@ -135,9 +129,31 @@ func(s *Server)mediaAlias(w http.ResponseWriter,r *http.Request){
 func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  if r.Method!=http.MethodGet&&r.Method!=http.MethodHead{http.Error(w,"method not allowed",405);return}
  rel,ok:=cleanAssetPath(r.URL.Path);if !ok{s.rejected.Add(1);http.Error(w,"invalid path",400);return}
- token := strings.TrimSpace(r.URL.Query().Get("token"))
- if !s.authorized(rel,token){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
- private := token != ""
+ if _,present:=r.URL.Query()["token"]; present {
+  s.rejected.Add(1)
+  http.Error(w,"playback tokens are not supported; send viewer Authorization",http.StatusBadRequest)
+  return
+ }
+ viewerAuthorization:=strings.TrimSpace(r.Header.Get("Authorization"))
+ if viewerAuthorization!="" {
+  if strings.TrimSpace(s.cfg.OriginAuthToken)=="" {
+   http.Error(w,"trusted origin authentication is not configured",http.StatusServiceUnavailable)
+   return
+  }
+  data,contentType,err:=s.fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization)
+  if err!=nil { http.Error(w,"media authorization or origin unavailable",http.StatusForbidden); return }
+  if contentType!="" { w.Header().Set("Content-Type",contentType) } else { setType(w,rel) }
+  w.Header().Set("Cache-Control","private, no-store")
+  w.Header().Set("CDN-Cache-Control","no-store")
+  w.Header().Set("Vary","Authorization, Range")
+  w.Header().Set("X-Cache","BYPASS")
+  w.Header().Set("Cache-Status","testagram; fwd=bypass")
+  if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }
+  s.served.Add(uint64(len(data)))
+  http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
+  return
+ }
+ private := false
  if ok, status := validateRangeHeader(r.Header.Get("Range"), s.cfg.MaxSegmentBytes); !ok {
   s.rejected.Add(1)
   if status == http.StatusRequestedRangeNotSatisfiable { w.Header().Set("Content-Range","bytes */0") }
@@ -179,8 +195,10 @@ func(s *Server)fetchCoalesced(key string,ttl,staleFor time.Duration)([]byte,erro
 }
 
 func(s *Server)fetchUpstream(rel string)([]byte,error){
- if data,ok:=s.fetchCloudinary(rel);ok{return data,nil}
- if data,ok:=s.fetchR2(rel);ok{return data,nil}
+ if isExplicitPublicPath(rel) {
+  if data,ok:=s.fetchCloudinary(rel);ok{return data,nil}
+  if data,ok:=s.fetchR2(rel);ok{return data,nil}
+ }
  bases:=append([]string{},s.cfg.ShieldURLs...);bases=append(bases,s.cfg.OriginURLs...)
  var lastErr error
  for _,baseURL:=range bases{
@@ -194,6 +212,11 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
   if e!=nil{s.blockOrigin(baseURL);lastErr=e;continue}
   if resp.StatusCode==404||resp.StatusCode==410{resp.Body.Close();lastErr=fmt.Errorf("upstream returned %d",resp.StatusCode);continue}
   if resp.StatusCode<200||resp.StatusCode>=300{resp.Body.Close();s.blockOrigin(baseURL);lastErr=fmt.Errorf("upstream returned %d",resp.StatusCode);continue}
+  if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Testagram-Visibility")),"public") {
+   resp.Body.Close()
+   lastErr=fmt.Errorf("origin did not explicitly classify object as public")
+   continue
+  }
   data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1));resp.Body.Close()
   if e!=nil{s.blockOrigin(baseURL);lastErr=e;continue}
   if int64(len(data))>s.cfg.MaxSegmentBytes{s.blockOrigin(baseURL);lastErr=fmt.Errorf("object exceeds max size");continue}
@@ -229,12 +252,31 @@ func(s *Server)fetchCloudinary(rel string)([]byte,bool){
 func(s *Server)purge(w http.ResponseWriter,r *http.Request){if r.Method!=http.MethodPost&&r.Method!=http.MethodDelete{http.Error(w,"method not allowed",405);return};if s.cfg.PurgeToken==""||!hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte("Bearer "+s.cfg.PurgeToken)){http.Error(w,"unauthorized",401);return};key:=strings.TrimSpace(r.URL.Query().Get("path"));if key==""{s.cache.Clear();w.WriteHeader(204);return};rel,ok:=cleanAssetPath("/v1/"+key);if !ok{http.Error(w,"invalid path",400);return};if !s.cache.Delete(rel){w.WriteHeader(404);return};w.WriteHeader(204)}
 
 
-func signToken(rel, secret, exp string) string {
- mac := hmac.New(sha256.New, []byte(secret))
- _, _ = mac.Write([]byte(rel + "|" + exp))
- return hex.EncodeToString(mac.Sum(nil))
+func isExplicitPublicPath(rel string) bool {
+ return strings.SplitN(strings.TrimPrefix(rel,"/"),"/",2)[0]=="public"
 }
-func(s *Server)authorized(rel,token string)bool{if strings.TrimSpace(s.cfg.PlaybackSecret)==""{return strings.TrimSpace(token)==""};parts:=strings.Split(token,".");if len(parts)!=2{return false};exp,e:=strconv.ParseInt(parts[0],10,64);if e!=nil||exp<time.Now().Unix(){return false};mac:=hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret));_,_=mac.Write([]byte(rel+"|"+parts[0]));expected:=hex.EncodeToString(mac.Sum(nil));return hmac.Equal([]byte(expected),[]byte(parts[1]))}
+
+func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization string)([]byte,string,error){
+ bases:=append([]string{},s.cfg.ShieldURLs...);bases=append(bases,s.cfg.OriginURLs...)
+ var lastErr error
+ for _,baseURL:=range bases {
+  b,e:=url.Parse(baseURL);if e!=nil{lastErr=e;continue}
+  b.Path=path.Join(b.Path,"v1",rel)
+  req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
+  req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
+  req.Header.Set("X-Testagram-Viewer-Authorization",viewerAuthorization)
+  req.Header.Set("Authorization","Bearer "+s.cfg.OriginAuthToken)
+  resp,e:=s.client.Do(req);if e!=nil{lastErr=e;continue}
+  if resp.StatusCode<200||resp.StatusCode>=300 {resp.Body.Close();lastErr=fmt.Errorf("origin authorization returned %d",resp.StatusCode);continue}
+  data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1))
+  contentType:=resp.Header.Get("Content-Type");resp.Body.Close()
+  if e!=nil{lastErr=e;continue}
+  if int64(len(data))>s.cfg.MaxSegmentBytes{lastErr=fmt.Errorf("object exceeds max size");continue}
+  return data,contentType,nil
+ }
+ if lastErr==nil{lastErr=fmt.Errorf("no trusted origin configured")}
+ return nil,"",lastErr
+}
 func(s *Server)originBlocked(o string)bool{s.originsMu.Lock();defer s.originsMu.Unlock();return time.Now().Before(s.badUntil[o])}
 func(s *Server)blockOrigin(o string){s.originsMu.Lock();s.badUntil[o]=time.Now().Add(5*time.Second);s.originsMu.Unlock()}
 func(s *Server)clearOrigin(o string){s.originsMu.Lock();delete(s.badUntil,o);s.originsMu.Unlock()}
