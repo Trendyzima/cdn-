@@ -143,6 +143,26 @@ func TestValidateRangeHeader(t *testing.T) {
  }
 }
 
+
+func TestPrivateMediaURLFailsClosedWithoutSigningSecret(t *testing.T) {
+ cfg := testConfig(t)
+ cfg.PublicBaseURL = "https://media.testagram.site"
+ cfg.MediaURLPrefix = "/v1"
+ cfg.PlaybackSecret = ""
+ s := New(cfg)
+ rr := httptest.NewRecorder()
+ s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/v1/media/url?path=users/u1/private.webp&private=1", nil))
+ if rr.Code != http.StatusServiceUnavailable { t.Fatalf("private media URL status=%d body=%s", rr.Code, rr.Body.String()) }
+}
+
+func TestUnsignedMediaRemainsPublicWhenSigningSecretIsNotConfigured(t *testing.T) {
+ cfg := testConfig(t)
+ cfg.PlaybackSecret = ""
+ s := New(cfg)
+ if !s.authorized("users/u1/avatar.webp", "") { t.Fatal("unsigned public media was rejected") }
+ if s.authorized("users/u1/private.webp", "9999999999.invalid") { t.Fatal("unverifiable token was accepted without a signing secret") }
+}
+
 func TestPrivateMediaResponseIsNeverPubliclyCacheable(t *testing.T) {
  origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
   w.Header().Set("Content-Type", "image/webp")
@@ -151,6 +171,7 @@ func TestPrivateMediaResponseIsNeverPubliclyCacheable(t *testing.T) {
  defer origin.Close()
  cfg := testConfig(t)
  cfg.OriginURLs = []string{origin.URL}
+ cfg.PlaybackSecret = "secret"
  s := New(cfg)
  rr := httptest.NewRecorder()
  req := httptest.NewRequest("GET", "/v1/users/u1/private.webp?token=9999999999."+signToken("users/u1/private.webp","secret","9999999999"), nil)
