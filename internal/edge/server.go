@@ -94,19 +94,116 @@ func(s *Server)route(w http.ResponseWriter,r *http.Request){
  w.Header().Set("Content-Type","application/json");_ = json.NewEncoder(w).Encode(map[string]any{"node_id":s.cfg.NodeID,"edge":s.cfg.EdgeURLs[idx],"index":idx})
 }
 
+type mediaURLAssertion struct {
+ Issuer string `json:"iss"`
+ Audience string `json:"aud"`
+ ObjectKey string `json:"object_key"`
+ ViewerID string `json:"viewer_id"`
+ Visibility string `json:"visibility"`
+ IssuedAt int64 `json:"iat"`
+ ExpiresAt int64 `json:"exp"`
+ Nonce string `json:"jti"`
+ Signature string `json:"signature"`
+}
+
+func validMediaViewerID(value string) bool {
+ if len(value) < 1 || len(value) > 128 { return false }
+ for _, c := range value {
+  if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') { return false }
+ }
+ return true
+}
+
+func mediaAssertionCanonical(a mediaURLAssertion) string {
+ return strings.Join([]string{
+  "v1", a.Issuer, a.Audience, a.ObjectKey, a.ViewerID, a.Visibility,
+  strconv.FormatInt(a.IssuedAt, 10), strconv.FormatInt(a.ExpiresAt, 10), a.Nonce,
+ }, "\n")
+}
+
+func signScopedToken(rel, viewerID, visibility, secret, exp string) string {
+ mac := hmac.New(sha256.New, []byte(secret))
+ _, _ = mac.Write([]byte(rel + "|" + viewerID + "|" + visibility + "|" + exp))
+ return exp + "." + viewerID + "." + visibility + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
 func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
- if r.Method!=http.MethodGet && r.Method!=http.MethodPost {
-  w.Header().Set("Allow","GET, POST")
-  http.Error(w,"method not allowed",http.StatusMethodNotAllowed)
+ w.Header().Set("Cache-Control","no-store")
+ if r.Method != http.MethodPost {
+  w.Header().Set("Allow","POST")
+  http.Error(w,"Backend-signed POST required",http.StatusMethodNotAllowed)
   return
  }
- // This legacy endpoint used to mint viewer playback URLs from caller-supplied
- // path/private query parameters. That is not an authorization boundary.
- // Keep it disabled until a separate Backend-signed, object/viewer/audience-
- // bound assertion contract is implemented and verified across all delivery
- // adapters. Do not fall back to public URLs when the private flag is absent.
- w.Header().Set("Cache-Control","no-store")
- http.Error(w,"media URL issuance requires Backend authorization",http.StatusGone)
+ if len(s.cfg.MediaIssuerSecret) < 32 || len(s.cfg.PlaybackSecret) < 32 || s.redis == nil {
+  http.Error(w,"media authorization is not configured",http.StatusServiceUnavailable)
+  return
+ }
+ r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+ defer r.Body.Close()
+ var assertion mediaURLAssertion
+ decoder := json.NewDecoder(r.Body)
+ decoder.DisallowUnknownFields()
+ if err := decoder.Decode(&assertion); err != nil {
+  http.Error(w,"invalid Backend media authorization assertion",http.StatusBadRequest)
+  return
+ }
+ var trailing any
+ if err := decoder.Decode(&trailing); err != io.EOF {
+  http.Error(w,"invalid Backend media authorization assertion",http.StatusBadRequest)
+  return
+ }
+ now := time.Now().Unix()
+ if assertion.Issuer != "testagram-backend" || assertion.Audience != "testagram-cdn" ||
+  (assertion.Visibility != "private" && assertion.Visibility != "public") ||
+  !validMediaViewerID(assertion.ViewerID) || len(assertion.Nonce) != 32 ||
+  len(assertion.Signature) != 64 || assertion.IssuedAt > now+30 ||
+  assertion.IssuedAt < now-60 || assertion.ExpiresAt <= now ||
+  assertion.ExpiresAt <= assertion.IssuedAt || assertion.ExpiresAt > now+600 ||
+  (assertion.Visibility == "public" && assertion.ViewerID != "public") ||
+  (assertion.Visibility == "private" && assertion.ViewerID == "public") {
+  http.Error(w,"invalid or expired Backend media authorization assertion",http.StatusUnauthorized)
+  return
+ }
+ if _, err := hex.DecodeString(assertion.Nonce); err != nil {
+  http.Error(w,"invalid Backend media authorization nonce",http.StatusUnauthorized)
+  return
+ }
+ signature, err := hex.DecodeString(assertion.Signature)
+ if err != nil {
+  http.Error(w,"invalid Backend media authorization signature",http.StatusUnauthorized)
+  return
+ }
+ mac := hmac.New(sha256.New, []byte(s.cfg.MediaIssuerSecret))
+ _, _ = mac.Write([]byte(mediaAssertionCanonical(assertion)))
+ if !hmac.Equal(signature, mac.Sum(nil)) {
+  http.Error(w,"invalid Backend media authorization signature",http.StatusUnauthorized)
+  return
+ }
+ rel, ok := cleanAssetPath("/v1/" + assertion.ObjectKey)
+ if !ok || rel != assertion.ObjectKey {
+  http.Error(w,"invalid media object key",http.StatusBadRequest)
+  return
+ }
+ ttl := time.Duration(assertion.ExpiresAt-now) * time.Second
+ if !s.redis.SetNX("media-issuer:"+assertion.Nonce, "1", ttl) {
+  // SetNX deliberately fails closed for both replay and an unavailable
+  // replay store; neither condition may mint a second delivery capability.
+  http.Error(w,"media authorization replay store rejected the assertion",http.StatusConflict)
+  return
+ }
+ base, err := url.Parse(strings.TrimRight(s.cfg.PublicBaseURL,"/"))
+ if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+  http.Error(w,"media delivery origin is not configured safely",http.StatusServiceUnavailable)
+  return
+ }
+ exp := strconv.FormatInt(assertion.ExpiresAt,10)
+ token := signScopedToken(rel, assertion.ViewerID, assertion.Visibility, s.cfg.PlaybackSecret, exp)
+ mediaURL := base.String() + strings.TrimRight(s.cfg.MediaURLPrefix,"/") + "/" + rel + "?token=" + url.QueryEscape(token)
+ w.Header().Set("Content-Type","application/json")
+ _ = json.NewEncoder(w).Encode(map[string]any{
+  "url": mediaURL, "path": rel, "expires_at": assertion.ExpiresAt,
+  "visibility": assertion.Visibility, "viewer_id": assertion.ViewerID,
+ })
 }
 
 func(s *Server)mediaAlias(w http.ResponseWriter,r *http.Request){
@@ -125,7 +222,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  rel,ok:=cleanAssetPath(r.URL.Path);if !ok{s.rejected.Add(1);http.Error(w,"invalid path",400);return}
  token := strings.TrimSpace(r.URL.Query().Get("token"))
  if !s.authorized(rel,token){s.rejected.Add(1);http.Error(w,"unauthorized",401);return}
- private := token != ""
+ private := tokenVisibility(token) != "public"
  if ok, status := validateRangeHeader(r.Header.Get("Range"), s.cfg.MaxSegmentBytes); !ok {
   s.rejected.Add(1)
   if status == http.StatusRequestedRangeNotSatisfiable { w.Header().Set("Content-Range","bytes */0") }
@@ -222,7 +319,31 @@ func signToken(rel, secret, exp string) string {
  _, _ = mac.Write([]byte(rel + "|" + exp))
  return hex.EncodeToString(mac.Sum(nil))
 }
-func(s *Server)authorized(rel,token string)bool{if s.cfg.PlaybackSecret==""{return true};parts:=strings.Split(token,".");if len(parts)!=2{return false};exp,e:=strconv.ParseInt(parts[0],10,64);if e!=nil||exp<time.Now().Unix(){return false};mac:=hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret));_,_=mac.Write([]byte(rel+"|"+parts[0]));expected:=hex.EncodeToString(mac.Sum(nil));return hmac.Equal([]byte(expected),[]byte(parts[1]))}
+func(s *Server)authorized(rel,token string)bool{
+ if len(s.cfg.PlaybackSecret) < 32 { return false }
+ parts := strings.Split(token,".")
+ if len(parts) == 2 {
+  exp, err := strconv.ParseInt(parts[0],10,64)
+  if err != nil || exp < time.Now().Unix() { return false }
+  mac := hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret))
+  _, _ = mac.Write([]byte(rel+"|"+parts[0]))
+  expected := hex.EncodeToString(mac.Sum(nil))
+  return hmac.Equal([]byte(expected),[]byte(parts[1]))
+ }
+ if len(parts) != 4 || !validMediaViewerID(parts[1]) || (parts[2] != "private" && parts[2] != "public") { return false }
+ exp, err := strconv.ParseInt(parts[0],10,64)
+ if err != nil || exp < time.Now().Unix() { return false }
+ mac := hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret))
+ _, _ = mac.Write([]byte(rel+"|"+parts[1]+"|"+parts[2]+"|"+parts[0]))
+ expected := hex.EncodeToString(mac.Sum(nil))
+ return hmac.Equal([]byte(expected),[]byte(parts[3]))
+}
+
+func tokenVisibility(token string) string {
+ parts := strings.Split(token,".")
+ if len(parts) == 4 && parts[2] == "public" { return "public" }
+ return "private"
+}
 func(s *Server)originBlocked(o string)bool{s.originsMu.Lock();defer s.originsMu.Unlock();return time.Now().Before(s.badUntil[o])}
 func(s *Server)blockOrigin(o string){s.originsMu.Lock();s.badUntil[o]=time.Now().Add(5*time.Second);s.originsMu.Unlock()}
 func(s *Server)clearOrigin(o string){s.originsMu.Lock();delete(s.badUntil,o);s.originsMu.Unlock()}
