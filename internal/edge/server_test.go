@@ -176,7 +176,6 @@ func TestBackendAssertionRejectsTamperingAndUnsafeScope(t *testing.T) {
   ObjectKey: "users/u1/private.webp", ViewerID: "viewer-1", Visibility: "private",
   IssuedAt: now, ExpiresAt: now + 300, Nonce: "ffeeddccbbaa99887766554433221100",
  }
- signed := signMediaAssertionForTest(assertion, issuerSecret)
  assertion.ObjectKey = "users/victim/private.webp"
  tampered, _ := json.Marshal(assertion)
  wrongAudience := mediaURLAssertion{
