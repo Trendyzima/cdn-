@@ -229,8 +229,7 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
   }
   if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Testagram-Visibility")),"public") {
    resp.Body.Close()
-   lastErr=fmt.Errorf("origin did not explicitly classify object as public")
-   continue
+   return nil,fmt.Errorf("origin did not explicitly classify object as public")
   }
   data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1));resp.Body.Close()
   if e!=nil{s.blockOrigin(baseURL);lastErr=e;continue}
