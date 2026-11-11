@@ -118,9 +118,12 @@ test("encoded and double-encoded traversal never reaches R2", async () => {
 
 test("malformed and multi-range requests fail closed", async () => {
   let calls = 0;
-  const env = { MEDIA_BUCKET: { get: async () => { calls++; return null; } } };
+  const key = "users/u1/video.mp4";
+  const secret = "0123456789abcdef0123456789abcdef";
+  const token = playbackToken(key, secret, Math.floor(Date.now()/1000)+600);
+  const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async () => { calls++; return null; } } };
   for (const rangeHeader of ["bytes=", "bytes=-0", "bytes=5-4", "bytes=0-1,4-5", "items=0-1"]) {
-    const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/video.mp4", {headers:{Range:rangeHeader}}), env);
+    const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + token, {headers:{Range:rangeHeader}}), env);
     assert.equal(res.status, 416);
   }
   assert.equal(calls, 0);
