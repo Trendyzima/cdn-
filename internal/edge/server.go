@@ -257,7 +257,7 @@ func isExplicitPublicPath(rel string) bool {
 }
 
 func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization string)([]byte,string,error){
- bases:=append([]string{},s.cfg.ShieldURLs...);bases=append(bases,s.cfg.OriginURLs...)
+ bases:=append([]string{},s.cfg.OriginURLs...)
  var lastErr error
  for _,baseURL:=range bases {
   b,e:=url.Parse(baseURL);if e!=nil{lastErr=e;continue}
