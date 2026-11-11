@@ -135,7 +135,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
   return
  }
  viewerAuthorization:=strings.TrimSpace(r.Header.Get("Authorization"))
- if len(viewerAuthorization)>8192 || strings.ContainsAny(viewerAuthorization,"\\r\\n") { http.Error(w,"invalid viewer authorization header",http.StatusBadRequest); return }
+ if len(viewerAuthorization)>8192 || strings.ContainsAny(viewerAuthorization,"\r\n") { http.Error(w,"invalid viewer authorization header",http.StatusBadRequest); return }
  if viewerAuthorization!="" {
   if strings.TrimSpace(s.cfg.OriginAuthToken)=="" {
    http.Error(w,"trusted origin authentication is not configured",http.StatusServiceUnavailable)
