@@ -208,7 +208,7 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
   b.Path=path.Join(b.Path,"v1",rel)
   req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
-  if s.cfg.OriginAuthToken!=""{req.Header.Set("Authorization","Bearer "+s.cfg.OriginAuthToken)}
+  if s.cfg.OriginAuthToken!=""{req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)}
   resp,e:=s.client.Do(req)
   if e!=nil{s.blockOrigin(baseURL);lastErr=e;continue}
   if resp.StatusCode==404||resp.StatusCode==410{resp.Body.Close();lastErr=fmt.Errorf("upstream returned %d",resp.StatusCode);continue}
