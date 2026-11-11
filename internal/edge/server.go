@@ -5,6 +5,7 @@ import (
  "crypto/sha256"
  "encoding/hex"
  "encoding/json"
+ "errors"
  "bytes"
  "fmt"
  "hash/fnv"
@@ -43,6 +44,8 @@ type Server struct {
 }
 type fetch struct{done chan struct{};data []byte;err error}
 type tvFetch struct{done chan struct{};data []byte;contentType string;err error}
+type originResponseError struct{status int}
+func(e *originResponseError)Error()string{return fmt.Sprintf("origin returned HTTP %d",e.status)}
 type bucket struct{tokens float64;last time.Time}
 type rateShard struct{mu sync.Mutex;rates map[string]*bucket}
 
@@ -142,7 +145,15 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
    return
   }
   data,contentType,err:=s.fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization)
-  if err!=nil { http.Error(w,"media authorization or origin unavailable",http.StatusForbidden); return }
+  if err!=nil {
+   status:=http.StatusBadGateway
+   var responseErr *originResponseError
+   if errors.As(err,&responseErr) {
+    if responseErr.status==http.StatusUnauthorized||responseErr.status==http.StatusForbidden {status=http.StatusForbidden}
+    if responseErr.status==http.StatusNotFound||responseErr.status==http.StatusGone {status=http.StatusNotFound}
+   }
+   http.Error(w,"media authorization or origin unavailable",status); return
+  }
   if contentType!="" { w.Header().Set("Content-Type",contentType) } else { setType(w,rel) }
   w.Header().Set("Cache-Control","private, no-store")
   w.Header().Set("CDN-Cache-Control","no-store")
@@ -211,8 +222,11 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
   if s.cfg.OriginAuthToken!=""{req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)}
   resp,e:=s.client.Do(req)
   if e!=nil{s.blockOrigin(baseURL);lastErr=e;continue}
-  if resp.StatusCode==404||resp.StatusCode==410{resp.Body.Close();lastErr=fmt.Errorf("upstream returned %d",resp.StatusCode);continue}
-  if resp.StatusCode<200||resp.StatusCode>=300{resp.Body.Close();s.blockOrigin(baseURL);lastErr=fmt.Errorf("upstream returned %d",resp.StatusCode);continue}
+  if resp.StatusCode<200||resp.StatusCode>=300 {
+   resp.Body.Close()
+   if resp.StatusCode<500 { return nil,fmt.Errorf("origin rejected public object with HTTP %d",resp.StatusCode) }
+   s.blockOrigin(baseURL);lastErr=fmt.Errorf("upstream returned %d",resp.StatusCode);continue
+  }
   if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Testagram-Visibility")),"public") {
    resp.Body.Close()
    lastErr=fmt.Errorf("origin did not explicitly classify object as public")
@@ -269,7 +283,11 @@ func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization stri
   req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)
   privateClient:=&http.Client{Transport:s.client.Transport,Timeout:s.cfg.OriginTimeout,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
   resp,e:=privateClient.Do(req);if e!=nil{lastErr=e;continue}
-  if resp.StatusCode<200||resp.StatusCode>=300 {resp.Body.Close();lastErr=fmt.Errorf("origin authorization returned %d",resp.StatusCode);continue}
+  if resp.StatusCode<200||resp.StatusCode>=300 {
+   resp.Body.Close()
+   if resp.StatusCode<500 { return nil,"",&originResponseError{status:resp.StatusCode} }
+   lastErr=fmt.Errorf("origin authorization returned %d",resp.StatusCode);continue
+  }
   data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1))
   contentType:=resp.Header.Get("Content-Type");resp.Body.Close()
   if e!=nil{lastErr=e;continue}
