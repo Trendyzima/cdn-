@@ -7,6 +7,8 @@ services:
       LISTEN_ADDR: ":8080"
       PUBLIC_BASE_URL: "https://media.testagram.site"
       MEDIA_URL_PREFIX: "/v1"
+      MEDIA_ISSUER_SECRET: ${MEDIA_ISSUER_SECRET:-}
+      PLAYBACK_SECRET: ${PLAYBACK_SECRET:-}
       ORIGIN_URL: "http://host.docker.internal:9000"
       CACHE_DIR: "/app/cache"
       SEGMENT_TTL: "30s"
