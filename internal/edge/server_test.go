@@ -2,7 +2,6 @@ package edge
 
 import (
  "encoding/json"
- "net/url"
  "net/http"
  "net/http/httptest"
  "testing"
