@@ -26,7 +26,7 @@ func TestCleanAssetPath(t *testing.T){
 }
 func TestPlaybackToken(t *testing.T){
  s:=&Server{cfg:config.Config{PlaybackSecret:"0123456789abcdef0123456789abcdef"}}
- token:="9999999999."+signToken("live/a.ts","secret","9999999999")
+ token:="9999999999."+signToken("live/a.ts","0123456789abcdef0123456789abcdef","9999999999")
  if !s.authorized("live/a.ts",token){t.Fatal("valid token rejected")}
  if s.authorized("live/b.ts",token){t.Fatal("token accepted for another path")}
 }
@@ -40,7 +40,7 @@ func testConfig(t *testing.T)config.Config{
  return config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
   MaxSegmentBytes:1<<20,NodeID:"test",OriginURLs:[]string{"http://127.0.0.1:1"},
-  PlaybackSecret:"secret",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,TVPrefetchTimeout:12*time.Second,
+  PlaybackSecret:"0123456789abcdef0123456789abcdef",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,TVPrefetchTimeout:12*time.Second,
  }
 }
 func TestMediaCachePolicy(t *testing.T) {
