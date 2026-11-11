@@ -25,7 +25,7 @@ func TestCleanAssetPath(t *testing.T){
  for _,tt:=range tests{got,ok:=cleanAssetPath(tt.in);if ok!=tt.ok||got!=tt.want{t.Fatalf("%q => %q,%v",tt.in,got,ok)}}
 }
 func TestPlaybackToken(t *testing.T){
- s:=&Server{cfg:config.Config{PlaybackSecret:"secret"}}
+ s:=&Server{cfg:config.Config{PlaybackSecret:"0123456789abcdef0123456789abcdef"}}
  token:="9999999999."+signToken("live/a.ts","secret","9999999999")
  if !s.authorized("live/a.ts",token){t.Fatal("valid token rejected")}
  if s.authorized("live/b.ts",token){t.Fatal("token accepted for another path")}
@@ -109,7 +109,7 @@ func TestPrivateMediaURLProducesAuthorizedToken(t *testing.T) {
  cfg := testConfig(t)
  cfg.PublicBaseURL = "https://media.testagram.site"
  cfg.MediaURLPrefix = "/v1"
- cfg.PlaybackSecret = "test-secret"
+ cfg.PlaybackSecret = "0123456789abcdef0123456789abcdef"
  s := New(cfg)
  rr := httptest.NewRecorder()
  s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/v1/media/url?path=users/u1/private.webp&private=1", nil))
@@ -153,7 +153,7 @@ func TestPrivateMediaResponseIsNeverPubliclyCacheable(t *testing.T) {
  cfg.OriginURLs = []string{origin.URL}
  s := New(cfg)
  rr := httptest.NewRecorder()
- req := httptest.NewRequest("GET", "/v1/users/u1/private.webp?token=9999999999."+signToken("users/u1/private.webp","secret","9999999999"), nil)
+ req := httptest.NewRequest("GET", "/v1/users/u1/private.webp?token=9999999999."+signToken("users/u1/private.webp","0123456789abcdef0123456789abcdef","9999999999"), nil)
  s.Handler().ServeHTTP(rr, req)
  if rr.Code != http.StatusOK { t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String()) }
  if got := rr.Header().Get("Cache-Control"); got != "private, no-store" { t.Fatalf("private cache-control=%q", got) }
@@ -222,4 +222,35 @@ func TestHealthIdentifiesCDNService(t *testing.T) {
  var body map[string]any
  if err := json.NewDecoder(rr.Body).Decode(&body); err != nil { t.Fatal(err) }
  if body["ok"] != true || body["service"] != "testagram-cdn" { t.Fatalf("unexpected health contract: %#v", body) }
+}
+
+func TestPrivatePlaybackFailsClosedWithoutStrongSecret(t *testing.T) {
+ cfg := testConfig(t)
+ cfg.PlaybackSecret = ""
+ s := New(cfg)
+
+ if s.authorized("users/u1/private.webp", "9999999999.anything") {
+  t.Fatal("private media was authorized without a playback secret")
+ }
+
+ mediaURL := httptest.NewRecorder()
+ s.Handler().ServeHTTP(mediaURL, httptest.NewRequest(http.MethodGet, "/v1/media/url?path=users/u1/private.webp&private=1", nil))
+ if mediaURL.Code != http.StatusServiceUnavailable {
+  t.Fatalf("private URL status=%d, want 503", mediaURL.Code)
+ }
+
+ asset := httptest.NewRecorder()
+ s.Handler().ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/v1/users/u1/private.webp", nil))
+ if asset.Code != http.StatusUnauthorized {
+  t.Fatalf("private asset status=%d, want 401", asset.Code)
+ }
+}
+
+func TestPrivatePlaybackRejectsWeakSecret(t *testing.T) {
+ cfg := testConfig(t)
+ cfg.PlaybackSecret = "too-short"
+ s := New(cfg)
+ if s.authorized("users/u1/private.webp", "9999999999."+signToken("users/u1/private.webp", cfg.PlaybackSecret, "9999999999")) {
+  t.Fatal("private media was authorized with a weak playback secret")
+ }
 }
