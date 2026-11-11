@@ -24,7 +24,7 @@ test("serves native /v1 media from R2", async () => {
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type"), "image/webp");
   assert.equal(res.headers.get("x-testagram-cdn"), "r2-edge");
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
+  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
   assert.equal(await res.text(), "test-image");
 });
 
@@ -44,7 +44,7 @@ test("missing objects remain a real 404", async () => {
   const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async () => null }};
   const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600)), env);
   assert.equal(res.status, 404);
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
+  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
 });
 
 test("health and readiness expose the deployed Worker identity", async () => {
@@ -53,8 +53,8 @@ test("health and readiness expose the deployed Worker identity", async () => {
   const ready = await worker.fetch(new Request("https://media.testagram.site/readyz"), env);
   assert.equal(health.status, 200);
   assert.equal(ready.status, 200);
-  assert.equal(health.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
-  assert.equal(ready.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-private-fail-closed-2");
+  assert.equal(health.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
+  assert.equal(ready.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
 });
 
 test("range requests return HTTP 206", async () => {
@@ -81,6 +81,36 @@ test("path traversal never reaches R2", async () => {
 function playbackToken(key, secret, exp) {
   return String(exp) + "." + createHmac("sha256", secret).update(key + "|" + String(exp)).digest("hex");
 }
+
+
+function viewerScopedPlaybackToken(key, viewerId, visibility, secret, exp) {
+  const value = String(exp);
+  const message = key + "|" + viewerId + "|" + visibility + "|" + value;
+  return value + "." + viewerId + "." + visibility + "." + createHmac("sha256", secret).update(message).digest("hex");
+}
+
+test("viewer-scoped private playback tokens are accepted and bound to object, viewer and visibility", async () => {
+  const secret = "0123456789abcdef0123456789abcdef";
+  const key = "users/u1/private.webp";
+  const exp = Math.floor(Date.now() / 1000) + 600;
+  const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async (requested) => {
+    assert.equal(requested, key);
+    return makeObject(key, "scoped-private-image");
+  }}};
+  const token = viewerScopedPlaybackToken(key, "viewer-42", "private", secret, exp);
+  const valid = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + token), env);
+  assert.equal(valid.status, 200);
+  assert.equal(valid.headers.get("cache-control"), "private, no-store");
+
+  const wrongViewer = viewerScopedPlaybackToken(key, "viewer-43", "private", secret, exp);
+  const tampered = token.replace("viewer-42", "viewer-43");
+  assert.notEqual(tampered, wrongViewer);
+  const wrongVisibility = viewerScopedPlaybackToken(key, "viewer-42", "public", secret, exp);
+  for (const invalid of [tampered, wrongVisibility]) {
+    const response = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + invalid), env);
+    assert.equal(response.status, 401);
+  }
+});
 
 test("private media requires a valid expiry-bound playback token", async () => {
   const secret = "0123456789abcdef0123456789abcdef";
