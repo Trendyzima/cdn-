@@ -20,6 +20,7 @@ func TestCleanAssetPath(t *testing.T){
   {"/v1/users/u1/../secret.webp",false,""},
   {"/v1/etc/passwd",false,""},
   {"/v1/users/u1/image.webp",true,"users/u1/image.webp"},
+  {"/v1/public/site/logo.webp",true,"public/site/logo.webp"},
  }
  for _,tt:=range tests{got,ok:=cleanAssetPath(tt.in);if ok!=tt.ok||got!=tt.want{t.Fatalf("%q => %q,%v",tt.in,got,ok)}}
 }
