@@ -1,4 +1,4 @@
-const WORKER_VERSION = "2026-10-08-r2-cdn-lockdown-1";
+const WORKER_VERSION = "2026-11-11-r2-private-fail-closed-2";
 const LEGACY_PREFIXES = ["/media/","/users/","/profiles/","/uploads/","/avatars/","/covers/","/photos/","/videos/"];
 
 function keyFromPath(p) {
