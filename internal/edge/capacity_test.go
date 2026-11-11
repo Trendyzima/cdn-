@@ -27,11 +27,12 @@ func TestCapacity1MLogicalViewers(t *testing.T) {
 
  cfg:=config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:64<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
-  StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},
+  StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},PlaybackSecret:"0123456789abcdef0123456789abcdef",
   NodeID:"capacity-test",RateLimitPerMin:0,RateLimitBurst:0,
   OriginTimeout:time.Second,MaxIdleConns:4096,MaxIdleConnsPerHost:4096,
  }
  s:=New(cfg)
+ token:="9999999999."+signToken("live/capacity.ts",cfg.PlaybackSecret,"9999999999")
  h:=http.HandlerFunc(s.asset)
  const viewers=1000000
  const workers=4096
@@ -46,7 +47,7 @@ func TestCapacity1MLogicalViewers(t *testing.T) {
    defer wg.Done()
    for range jobs{
     rr:=httptest.NewRecorder()
-    h.ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/live/capacity.ts",nil))
+    h.ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/live/capacity.ts?token="+token,nil))
     if rr.Code==http.StatusOK&&rr.Body.Len()==1024{ok.Add(1)}else{if failures.Add(1)==1{firstFailure.Store(int64(rr.Code))}}
    }
   }()
