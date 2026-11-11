@@ -1,12 +1,18 @@
 package edge
 
 import (
+ "bytes"
  "encoding/json"
+ "crypto/hmac"
+ "crypto/sha256"
+ "encoding/hex"
  "net/http"
  "net/http/httptest"
+ "net/url"
  "testing"
  "time"
  "strings"
+ "sync"
  "github.com/Trendyzima/cdn-/internal/config"
 )
 
@@ -23,9 +29,11 @@ func TestCleanAssetPath(t *testing.T){
  }
  for _,tt:=range tests{got,ok:=cleanAssetPath(tt.in);if ok!=tt.ok||got!=tt.want{t.Fatalf("%q => %q,%v",tt.in,got,ok)}}
 }
+const testPlaybackSecret = "0123456789abcdef0123456789abcdef"
+
 func TestPlaybackToken(t *testing.T){
- s:=&Server{cfg:config.Config{PlaybackSecret:"secret"}}
- token:="9999999999."+signToken("live/a.ts","secret","9999999999")
+ s:=&Server{cfg:config.Config{PlaybackSecret:testPlaybackSecret}}
+ token:="9999999999."+signToken("live/a.ts",testPlaybackSecret,"9999999999")
  if !s.authorized("live/a.ts",token){t.Fatal("valid token rejected")}
  if s.authorized("live/b.ts",token){t.Fatal("token accepted for another path")}
 }
@@ -39,7 +47,7 @@ func testConfig(t *testing.T)config.Config{
  return config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
   MaxSegmentBytes:1<<20,NodeID:"test",OriginURLs:[]string{"http://127.0.0.1:1"},
-  PlaybackSecret:"secret",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,TVPrefetchTimeout:12*time.Second,
+  PlaybackSecret:testPlaybackSecret,RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,TVPrefetchTimeout:12*time.Second,
  }
 }
 func TestMediaCachePolicy(t *testing.T) {
@@ -77,11 +85,114 @@ func TestXCloneMediaAliases(t *testing.T) {
  }
 }
 
+func signMediaAssertionForTest(a mediaURLAssertion, secret string) []byte {
+ mac := hmac.New(sha256.New, []byte(secret))
+ _, _ = mac.Write([]byte(mediaAssertionCanonical(a)))
+ a.Signature = hex.EncodeToString(mac.Sum(nil))
+ body, err := json.Marshal(a)
+ if err != nil { panic(err) }
+ return body
+}
+
+func TestBackendAssertionIssuesScopedURLOnceAndRejectsReplay(t *testing.T) {
+ issuerSecret := "backend-issuer-secret-0123456789abcdef"
+ redisState := map[string]bool{}
+ var redisMu sync.Mutex
+ redisServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  var args []any
+  if err := json.NewDecoder(r.Body).Decode(&args); err != nil { t.Fatal(err) }
+  if len(args) < 3 { t.Fatalf("unexpected Redis command: %#v", args) }
+  key, ok := args[1].(string)
+  if !ok { t.Fatalf("unexpected Redis key: %#v", args[1]) }
+  redisMu.Lock()
+  result := any("OK")
+  if redisState[key] { result = nil } else { redisState[key] = true }
+  redisMu.Unlock()
+  w.Header().Set("Content-Type", "application/json")
+  _ = json.NewEncoder(w).Encode(map[string]any{"result": result})
+ }))
+ defer redisServer.Close()
+
+ cfg := testConfig(t)
+ cfg.PublicBaseURL = "https://media.testagram.site"
+ cfg.MediaURLPrefix = "/v1"
+ cfg.MediaIssuerSecret = issuerSecret
+ cfg.UpstashRedisURL = redisServer.URL
+ cfg.UpstashRedisToken = "test-redis-token"
+ s := New(cfg)
+
+ now := time.Now().Unix()
+ assertion := mediaURLAssertion{
+  Issuer: "testagram-backend", Audience: "testagram-cdn",
+  ObjectKey: "users/u1/private.webp", ViewerID: "viewer-1", Visibility: "private",
+  IssuedAt: now, ExpiresAt: now + 300, Nonce: "00112233445566778899aabbccddeeff",
+ }
+ body := signMediaAssertionForTest(assertion, issuerSecret)
+ req := httptest.NewRequest(http.MethodPost, "/v1/media/url", bytes.NewReader(body))
+ rr := httptest.NewRecorder()
+ s.Handler().ServeHTTP(rr, req)
+ if rr.Code != http.StatusOK { t.Fatalf("issuance status=%d body=%s", rr.Code, rr.Body.String()) }
+
+ var response struct {
+  URL string `json:"url"`
+  Path string `json:"path"`
+  ExpiresAt int64 `json:"expires_at"`
+  Visibility string `json:"visibility"`
+  ViewerID string `json:"viewer_id"`
+ }
+ if err := json.NewDecoder(rr.Body).Decode(&response); err != nil { t.Fatal(err) }
+ parsed, err := url.Parse(response.URL)
+ if err != nil { t.Fatal(err) }
+ token := parsed.Query().Get("token")
+ if response.Path != assertion.ObjectKey || response.Visibility != "private" || response.ViewerID != "viewer-1" {
+  t.Fatalf("unexpected scoped issuance response: %+v", response)
+ }
+ if !s.authorized(assertion.ObjectKey, token) || tokenVisibility(token) != "private" {
+  t.Fatalf("issued viewer token was not accepted: %q", token)
+ }
+ if s.authorized("users/u1/other.webp", token) {
+  t.Fatal("viewer token was accepted for a different object key")
+ }
+
+ replay := httptest.NewRecorder()
+ s.Handler().ServeHTTP(replay, httptest.NewRequest(http.MethodPost, "/v1/media/url", bytes.NewReader(body)))
+ if replay.Code != http.StatusConflict {
+  t.Fatalf("replayed assertion status=%d body=%s", replay.Code, replay.Body.String())
+ }
+}
+
+func TestBackendAssertionRejectsTamperingAndUnsafeScope(t *testing.T) {
+ issuerSecret := "backend-issuer-secret-0123456789abcdef"
+ cfg := testConfig(t)
+ cfg.PublicBaseURL = "https://media.testagram.site"
+ cfg.MediaIssuerSecret = issuerSecret
+ cfg.UpstashRedisURL = "http://127.0.0.1:1"
+ cfg.UpstashRedisToken = "test-redis-token"
+ s := New(cfg)
+
+ now := time.Now().Unix()
+ assertion := mediaURLAssertion{
+  Issuer: "testagram-backend", Audience: "testagram-cdn",
+  ObjectKey: "users/u1/private.webp", ViewerID: "viewer-1", Visibility: "private",
+  IssuedAt: now, ExpiresAt: now + 300, Nonce: "ffeeddccbbaa99887766554433221100",
+ }
+ signed := signMediaAssertionForTest(assertion, issuerSecret)
+ assertion.ObjectKey = "users/victim/private.webp"
+ tampered, _ := json.Marshal(assertion)
+ for _, body := range [][]byte{tampered, signed} {
+  rr := httptest.NewRecorder()
+  s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/media/url", bytes.NewReader(body)))
+  if rr.Code != http.StatusUnauthorized {
+   t.Fatalf("tampered or invalid-scope assertion status=%d body=%s", rr.Code, rr.Body.String())
+  }
+ }
+}
+
 func TestMediaURLIssuanceFailsClosedUntilBackendAuthorizationExists(t *testing.T) {
  cfg := testConfig(t)
  cfg.PublicBaseURL = "https://media.testagram.site"
  cfg.MediaURLPrefix = "/v1"
- cfg.PlaybackSecret = "test-secret"
+ cfg.PlaybackSecret = testPlaybackSecret
  s := New(cfg)
  for _, target := range []string{
   "/v1/media/url?path=users/u1/avatar.webp",
@@ -90,7 +201,7 @@ func TestMediaURLIssuanceFailsClosedUntilBackendAuthorizationExists(t *testing.T
  } {
   rr := httptest.NewRecorder()
   s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, target, nil))
-  if rr.Code != http.StatusGone {
+  if rr.Code != http.StatusMethodNotAllowed {
    t.Fatalf("untrusted issuance path %s returned status=%d body=%s", target, rr.Code, rr.Body.String())
   }
   if strings.Contains(rr.Body.String(), "token=") || strings.Contains(rr.Body.String(), "media.testagram.site") {
@@ -147,7 +258,7 @@ func TestPrivateMediaResponseIsNeverPubliclyCacheable(t *testing.T) {
  cfg.OriginURLs = []string{origin.URL}
  s := New(cfg)
  rr := httptest.NewRecorder()
- req := httptest.NewRequest("GET", "/v1/users/u1/private.webp?token=9999999999."+signToken("users/u1/private.webp","secret","9999999999"), nil)
+ req := httptest.NewRequest("GET", "/v1/users/u1/private.webp?token=9999999999."+signToken("users/u1/private.webp",testPlaybackSecret,"9999999999"), nil)
  s.Handler().ServeHTTP(rr, req)
  if rr.Code != http.StatusOK { t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String()) }
  if got := rr.Header().Get("Cache-Control"); got != "private, no-store" { t.Fatalf("private cache-control=%q", got) }
