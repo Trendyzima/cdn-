@@ -179,7 +179,13 @@ func TestBackendAssertionRejectsTamperingAndUnsafeScope(t *testing.T) {
  signed := signMediaAssertionForTest(assertion, issuerSecret)
  assertion.ObjectKey = "users/victim/private.webp"
  tampered, _ := json.Marshal(assertion)
- for _, body := range [][]byte{tampered, signed} {
+ wrongAudience := mediaURLAssertion{
+  Issuer: "testagram-backend", Audience: "another-service",
+  ObjectKey: "users/u1/private.webp", ViewerID: "viewer-1", Visibility: "private",
+  IssuedAt: now, ExpiresAt: now + 300, Nonce: "11223344556677889900aabbccddeeff",
+ }
+ invalidScope := signMediaAssertionForTest(wrongAudience, issuerSecret)
+ for _, body := range [][]byte{tampered, invalidScope} {
   rr := httptest.NewRecorder()
   s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/media/url", bytes.NewReader(body)))
   if rr.Code != http.StatusUnauthorized {
