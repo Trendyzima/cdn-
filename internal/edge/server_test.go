@@ -38,7 +38,7 @@ func testConfig(t *testing.T)config.Config{
  return config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
   MaxSegmentBytes:1<<20,NodeID:"test",OriginURLs:[]string{"http://127.0.0.1:1"},
-  RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,TVPrefetchTimeout:12*time.Second,
+  OriginAuthToken:"test-origin-token",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,TVPrefetchTimeout:12*time.Second,
  }
 }
 func TestMediaCachePolicy(t *testing.T) {
@@ -148,7 +148,7 @@ func TestPrivateMediaRequestWithoutViewerIdentityIsRejectedByOrigin(t *testing.T
 func TestViewerAuthorizedMediaBypassesCacheAndForwardsIdentity(t *testing.T) {
  seen:=false
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-  if r.Header.Get("Authorization")!="Bearer origin-secret"{t.Errorf("missing service credential")}
+  if r.Header.Get("X-Testagram-Origin-Auth")!="origin-secret"{t.Errorf("missing service credential")}
   if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer appwrite-session"{t.Errorf("viewer identity not forwarded")}
   seen=true;w.Header().Set("Content-Type","image/webp");w.Write([]byte("private-bytes"))
  }))
