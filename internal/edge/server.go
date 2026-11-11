@@ -108,7 +108,11 @@ func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
  mediaURL:=base+strings.TrimRight(s.cfg.MediaURLPrefix,"/")+"/"+rel
  private:=r.URL.Query().Get("private")=="1"
  var expires any
- if private && s.cfg.PlaybackSecret!=""{
+ if private {
+  if len(s.cfg.PlaybackSecret)<32 {
+   http.Error(w,"private playback is not configured",http.StatusServiceUnavailable)
+   return
+  }
   exp:=time.Now().Add(10*time.Minute).Unix()
   expText:=strconv.FormatInt(exp,10);mediaURL+="?token="+url.QueryEscape(expText+"."+signToken(rel,s.cfg.PlaybackSecret,expText))
   expires=exp
@@ -230,7 +234,7 @@ func signToken(rel, secret, exp string) string {
  _, _ = mac.Write([]byte(rel + "|" + exp))
  return hex.EncodeToString(mac.Sum(nil))
 }
-func(s *Server)authorized(rel,token string)bool{if s.cfg.PlaybackSecret==""{return true};parts:=strings.Split(token,".");if len(parts)!=2{return false};exp,e:=strconv.ParseInt(parts[0],10,64);if e!=nil||exp<time.Now().Unix(){return false};mac:=hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret));_,_=mac.Write([]byte(rel+"|"+parts[0]));expected:=hex.EncodeToString(mac.Sum(nil));return hmac.Equal([]byte(expected),[]byte(parts[1]))}
+func(s *Server)authorized(rel,token string)bool{if len(s.cfg.PlaybackSecret)<32||strings.TrimSpace(token)==""{return false};parts:=strings.Split(token,".");if len(parts)!=2{return false};exp,e:=strconv.ParseInt(parts[0],10,64);if e!=nil||exp<time.Now().Unix(){return false};mac:=hmac.New(sha256.New,[]byte(s.cfg.PlaybackSecret));_,_=mac.Write([]byte(rel+"|"+parts[0]));expected:=hex.EncodeToString(mac.Sum(nil));return hmac.Equal([]byte(expected),[]byte(parts[1]))}
 func(s *Server)originBlocked(o string)bool{s.originsMu.Lock();defer s.originsMu.Unlock();return time.Now().Before(s.badUntil[o])}
 func(s *Server)blockOrigin(o string){s.originsMu.Lock();s.badUntil[o]=time.Now().Add(5*time.Second);s.originsMu.Unlock()}
 func(s *Server)clearOrigin(o string){s.originsMu.Lock();delete(s.badUntil,o);s.originsMu.Unlock()}
