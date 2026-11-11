@@ -17,7 +17,7 @@ func TestRequestCoalescing(t *testing.T){
  defer origin.Close()
  cfg:=config.Config{CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},PlaybackSecret:"0123456789abcdef0123456789abcdef",NodeID:"test",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,MaxIdleConns:100,MaxIdleConnsPerHost:100}
  s:=New(cfg);var wg sync.WaitGroup
- for i:=0;i<20;i++{wg.Add(1);go func(){defer wg.Done();rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts?token="+url.QueryEscape("9999999999."+signToken("live/a.ts","${secret}","9999999999")),nil));if rr.Code!=200{t.Errorf("status %d",rr.Code)}}()}
+ for i:=0;i<20;i++{wg.Add(1);go func(){defer wg.Done();rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts?token="+url.QueryEscape("9999999999."+signToken("live/a.ts","0123456789abcdef0123456789abcdef","9999999999")),nil));if rr.Code!=200{t.Errorf("status %d",rr.Code)}}()}
  wg.Wait();if got:=calls.Load();got!=1{t.Fatalf("expected one origin call, got %d",got)}
 }
 
@@ -25,7 +25,7 @@ func TestOriginFailover(t *testing.T){
  bad:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){http.Error(w,"bad",500)}));defer bad.Close()
  good:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){_,_=w.Write([]byte("ok"))}));defer good.Close()
  cfg:=config.Config{CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{bad.URL,good.URL},PlaybackSecret:"0123456789abcdef0123456789abcdef",NodeID:"test",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,MaxIdleConns:100,MaxIdleConnsPerHost:100}
- s:=New(cfg);rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts?token="+url.QueryEscape("9999999999."+signToken("live/a.ts","${secret}","9999999999")),nil))
+ s:=New(cfg);rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts?token="+url.QueryEscape("9999999999."+signToken("live/a.ts","0123456789abcdef0123456789abcdef","9999999999")),nil))
  if rr.Code!=200||rr.Body.String()!="ok"{t.Fatalf("failover: status=%d body=%q",rr.Code,rr.Body.String())}
 }
 
@@ -35,9 +35,9 @@ func TestStaleIfOriginFails(t *testing.T){
  defer origin.Close()
  cfg:=config.Config{CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:20*time.Millisecond,ManifestTTL:10*time.Millisecond,StaleIfError:time.Second,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},PlaybackSecret:"0123456789abcdef0123456789abcdef",NodeID:"test",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,MaxIdleConns:100,MaxIdleConnsPerHost:100}
  s:=New(cfg)
- rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts?token="+url.QueryEscape("9999999999."+signToken("live/a.ts","${secret}","9999999999")),nil));if rr.Code!=200||rr.Body.String()!="stable-segment"{t.Fatalf("initial: %d %q",rr.Code,rr.Body.String())}
+ rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts?token="+url.QueryEscape("9999999999."+signToken("live/a.ts","0123456789abcdef0123456789abcdef","9999999999")),nil));if rr.Code!=200||rr.Body.String()!="stable-segment"{t.Fatalf("initial: %d %q",rr.Code,rr.Body.String())}
  time.Sleep(30*time.Millisecond);fail.Store(true)
- rr=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts",nil));if rr.Code!=200||rr.Body.String()!="stable-segment"{t.Fatalf("stale: %d %q",rr.Code,rr.Body.String())}
+ rr=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts?token="+url.QueryEscape("9999999999."+signToken("live/a.ts","0123456789abcdef0123456789abcdef","9999999999")),nil));if rr.Code!=200||rr.Body.String()!="stable-segment"{t.Fatalf("stale: %d %q",rr.Code,rr.Body.String())}
  if s.staleHits.Load()!=1{t.Fatalf("expected one stale hit, got %d",s.staleHits.Load())}
 }
 
