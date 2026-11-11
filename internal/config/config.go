@@ -20,6 +20,7 @@ type Config struct {
     EdgeURLs []string
     OriginAuthToken string
     PlaybackSecret string
+    MediaIssuerSecret string
     PurgeToken string
     CacheDir string
     CacheTTL time.Duration
@@ -62,6 +63,7 @@ func Load() Config {
         EdgeURLs: split(os.Getenv("EDGE_URLS")),
         OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
         PlaybackSecret: os.Getenv("PLAYBACK_SECRET"),
+        MediaIssuerSecret: os.Getenv("MEDIA_ISSUER_SECRET"),
         PurgeToken: os.Getenv("PURGE_TOKEN"),
         CacheDir: env("CACHE_DIR","./cache"),
         CacheTTL: duration("CACHE_TTL",30*time.Second),
