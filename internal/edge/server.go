@@ -95,26 +95,18 @@ func(s *Server)route(w http.ResponseWriter,r *http.Request){
 }
 
 func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
- if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
- raw:=strings.TrimSpace(r.URL.Query().Get("path"))
- if raw==""{http.Error(w,"path is required",400);return}
- rel,ok:=cleanAssetPath(raw)
- if !ok{http.Error(w,"invalid media path",400);return}
- base:=strings.TrimRight(s.cfg.PublicBaseURL,"/")
- if base==""{
-  scheme:=r.Header.Get("X-Forwarded-Proto"); if scheme=="" { scheme="https" }
-  base=scheme+"://"+r.Host
+ if r.Method!=http.MethodGet && r.Method!=http.MethodPost {
+  w.Header().Set("Allow","GET, POST")
+  http.Error(w,"method not allowed",http.StatusMethodNotAllowed)
+  return
  }
- mediaURL:=base+strings.TrimRight(s.cfg.MediaURLPrefix,"/")+"/"+rel
- private:=r.URL.Query().Get("private")=="1"
- var expires any
- if private && s.cfg.PlaybackSecret!=""{
-  exp:=time.Now().Add(10*time.Minute).Unix()
-  expText:=strconv.FormatInt(exp,10);mediaURL+="?token="+url.QueryEscape(expText+"."+signToken(rel,s.cfg.PlaybackSecret,expText))
-  expires=exp
- }
- w.Header().Set("Content-Type","application/json")
- _=json.NewEncoder(w).Encode(map[string]any{"url":mediaURL,"path":rel,"expires_at":expires,"public":!private})
+ // This legacy endpoint used to mint viewer playback URLs from caller-supplied
+ // path/private query parameters. That is not an authorization boundary.
+ // Keep it disabled until a separate Backend-signed, object/viewer/audience-
+ // bound assertion contract is implemented and verified across all delivery
+ // adapters. Do not fall back to public URLs when the private flag is absent.
+ w.Header().Set("Cache-Control","no-store")
+ http.Error(w,"media URL issuance requires Backend authorization",http.StatusGone)
 }
 
 func(s *Server)mediaAlias(w http.ResponseWriter,r *http.Request){
