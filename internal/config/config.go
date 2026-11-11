@@ -19,7 +19,6 @@ type Config struct {
     ShieldURLs []string
     EdgeURLs []string
     OriginAuthToken string
-    PlaybackSecret string
     PurgeToken string
     CacheDir string
     CacheTTL time.Duration
@@ -61,7 +60,6 @@ func Load() Config {
         ShieldURLs: split(os.Getenv("SHIELD_URLS")),
         EdgeURLs: split(os.Getenv("EDGE_URLS")),
         OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
-        PlaybackSecret: os.Getenv("PLAYBACK_SECRET"),
         PurgeToken: os.Getenv("PURGE_TOKEN"),
         CacheDir: env("CACHE_DIR","./cache"),
         CacheTTL: duration("CACHE_TTL",30*time.Second),
