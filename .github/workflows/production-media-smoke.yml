@@ -2,22 +2,21 @@ name: Production Media Smoke
 
 on:
   workflow_dispatch:
-  push:
+  workflow_run:
+    workflows: ["Deploy private R2 media Worker"]
+    types: [completed]
     branches: [main]
-    paths:
-      - "internal/**"
-      - "!internal/**/*_test.go"
-      - "cloudflare/**"
 
 permissions:
   contents: read
 
 jobs:
   ownership:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Prove first-party Go CDN ownership
+      - name: Verify the production R2 Worker identity and readiness
         shell: bash
         run: |
           set -euo pipefail
@@ -26,15 +25,22 @@ jobs:
             https://media.testagram.site/healthz
           cat /tmp/health.headers
           cat /tmp/health.json
-          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/health.headers
-          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-10-08-go-edge-iptv-v1[[:space:]]*$' /tmp/health.headers
+          grep -Eiq '^x-testagram-cdn:[[:space:]]*r2-edge[[:space:]]*$' /tmp/health.headers
+          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-12-r2-backend-assertion-v1[[:space:]]*$' /tmp/health.headers
+          grep -q '"version":"2026-11-12-r2-backend-assertion-v1"' /tmp/health.json
 
-      - name: Verify CDN metrics endpoint
+          curl --fail --silent --show-error --max-time 15 \
+            -D /tmp/ready.headers -o /tmp/ready.json \
+            https://media.testagram.site/readyz
+          grep -Eiq '^x-testagram-cdn:[[:space:]]*r2-edge[[:space:]]*$' /tmp/ready.headers
+          grep -q '"ok":true' /tmp/ready.json
+
+      - name: Verify private media fails closed without a viewer assertion
         shell: bash
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 \
-            https://media.testagram.site/metrics > /tmp/metrics.txt
-          grep -q '^testagram_edge_tv_prefetch_success_total ' /tmp/metrics.txt
-          grep -q '^testagram_edge_tv_prefetch_failures_total ' /tmp/metrics.txt
-          grep -q '^testagram_edge_tv_prefetch_warmed_seconds_total ' /tmp/metrics.txt
+          status="$(curl --silent --show-error --max-time 15 \
+            -o /tmp/private-denied.json -w '%{http_code}' \
+            https://media.testagram.site/v1/users/smoke/0123456789abcdef0123456789abcdef)"
+          cat /tmp/private-denied.json
+          test "$status" = "401"
