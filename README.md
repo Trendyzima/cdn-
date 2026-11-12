@@ -23,7 +23,7 @@ For example, 100,000 viewers at an average 2 Mbps media bitrate represents about
 - request coalescing so one cache miss does not fan out to the origin
 - multi-origin failover
 - cache-shield tier via SHIELD_URLS
-- stale-if-error cache retention so a recent segment/playlist can survive a short upstream outage
+- fail-closed origin behavior for mutable user media; no stale bytes are served when Backend is unavailable
 - deterministic /route?key=... edge selection over configured EDGE_URLS
 - graceful shutdown/draining
 - bounded rate-limiter state
@@ -35,7 +35,7 @@ For example, 100,000 viewers at an average 2 Mbps media bitrate represents about
 
 Live media byte delivery supports short manifest cache lifetimes, range requests and `X-Accel-Buffering: no`. TV catalogue authorization, playback grants, manifest rewriting and segment proxying are not enabled on the production route yet.
 
-The HTTP stale controls follow the model defined by RFC 5861: stale content can be used during controlled revalidation or when an upstream error occurs. RFC 8216 also requires live media segments referenced by a playlist to remain available long enough to avoid interrupting in-progress playback, so cache retention must not be shorter than the playback safety window.
+Mutable user media is never served stale after expiry or origin failure because Backend may have revoked visibility or deleted the asset while the origin was unavailable. The CDN keeps bounded shared-cache entries and browser clients revalidate; deletion/visibility transitions still require a Backend-driven purge integration.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ The HTTP stale controls follow the model defined by RFC 5861: stale content can 
 4. Edge asks SHIELD_URLS first when configured.
 5. Shield asks its cache/origins.
 6. Origin is contacted only after cache/shield misses.
-7. A bounded stale object can be served when upstream is unavailable.
+7. On origin failure, the CDN fails closed instead of serving stale mutable user media.
 
 The shield tier is important at large scale: regional edges should not all independently hammer the origin for the same live segment.
 
@@ -73,7 +73,7 @@ Defaults:
 
 - .m3u8: internal TTL 2 seconds
 - media segments: internal TTL 30 seconds
-- stale-if-error: 60 seconds
+- stale-if-error: disabled for canonical user-media delivery
 - object limit: 16 MiB
 - cache capacity: 64 GiB by default (disk-backed, configurable)
 - hot memory cache: 48 GiB by default for hottest live objects, configurable; it is bounded and allocated only as objects are admitted
@@ -100,7 +100,7 @@ P2P remains an acceleration layer, never the source of truth. HTTP CDN delivery 
 | HOT_CACHE_BYTES | 512 MiB | bounded RAM hot-cache tier; raise only when node RAM can safely support it |
 | SEGMENT_TTL | 120s | segment cache TTL (deployment may lower it) |
 | MANIFEST_TTL | 2s | playlist cache TTL |
-| STALE_IF_ERROR | 120s | stale retention after expiry; never used after authoritative origin denial |
+| STALE_IF_ERROR | 120s | legacy setting; canonical user-media delivery does not serve stale objects |
 | MAX_SEGMENT_BYTES | 32 MiB | object size limit |
 | ORIGIN_TIMEOUT | 10s | upstream timeout |
 | MAX_IDLE_CONNS | 2048 | global upstream idle pool |
@@ -183,7 +183,7 @@ private-only, so the public cache-miss integration remains blocked by
 The CDN fails closed until that public-origin contract is implemented; direct
 Cloudinary/R2 fallbacks are disabled because they bypass Backend visibility.
 Unclassified, private or denied origin responses are never cached or served
-stale. A 401/403/404 origin response invalidates a stale public cache entry.
+stale. A 401/403/404 origin response invalidates any cached public copy.
 
 Private media requests carry a Backend-issued assertion in
 `Authorization: Bearer <assertion>`. The Go CDN forwards it to the trusted
@@ -255,9 +255,9 @@ The default production profile is deliberately light enough for small edge nodes
 - 8 GiB disk cache and 512 MiB hot RAM cache by default; both are bounded.
 - 2,048 global idle upstream connections, 256 idle connections per host and a 512 per-host connection ceiling.
 - Live playlists are short-lived so viewers discover new segments quickly.
-- Media segments receive a longer stale recovery window so a brief origin/R2 outage does not immediately interrupt playback.
+- Mutable user media is never served stale after expiry or Backend origin failure; the service fails closed rather than risking delivery after a visibility or deletion change.
 - The edge coalesces concurrent requests for the same live object.
-- After a live playlist is fetched, the edge warms the earliest advertised media until at least 45 seconds is covered (or the playlist ends), using bounded concurrency. Extensionless HLS media URIs are supported; playlists are never prefetched as media. Each warmup pass has a hard timeout and records success/failure metrics.
+- Legacy TV prefetch helpers remain in the codebase for future integration but are not active while `/v1/tv/*` is disabled.
 - Generic HLS/DASH byte delivery is supported by the Go data plane when it is backed by an approved origin.
 - The product TV route `/v1/tv/*` remains disabled until Backend-issued playback grants and Flutter subrequest authorization are complete.
 
