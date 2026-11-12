@@ -1,6 +1,6 @@
 # Testagram Edge CDN
 
-A self-hosted, Bunny/Cloudflare-style data-plane CDN for live HLS/DASH, built as a normal Go HTTP service. GitHub is the source/build/automation layer; it is never the video transport layer.
+A self-hosted Go media data plane for Testagram public and private media, with byte-range and HLS/DASH delivery primitives. The legacy TV playback proxy is disabled until the cross-repository Backend grant contract is implemented. GitHub is the source/build/automation layer; it is never the video transport layer.
 
 ## 100k-viewer capacity target
 
@@ -31,9 +31,9 @@ For example, 100,000 viewers at an average 2 Mbps media bitrate represents about
 - HLS-aware TTL and HTTP cache-control
 - opt-in 100,000 logical-viewer fan-out test (CAPACITY_TEST=1)
 - Prometheus-style counters for cache, upstream, inflight, stale and rejection behavior
-- IPTV prefetch observability: cache hits/misses, warmed segment count, warmed seconds, failures, and counters on `/healthz` and `/metrics`
+- bounded media/cache observability: cache hits/misses, origin requests, in-flight work, bytes served, stale hits and rejection counters on `/healthz` and `/metrics`
 
-Live IPTV delivery is tuned for low CPU and low buffering: HLS playlists use short cache lifetimes, playlists are gzip-compressed only when large enough to benefit, compression uses the fastest gzip level, and live responses advertise `X-Accel-Buffering: no` to avoid reverse-proxy buffering.
+Live media byte delivery supports short manifest cache lifetimes, range requests and `X-Accel-Buffering: no`. TV catalogue authorization, playback grants, manifest rewriting and segment proxying are not enabled on the production route yet.
 
 The HTTP stale controls follow the model defined by RFC 5861: stale content can be used during controlled revalidation or when an upstream error occurs. RFC 8216 also requires live media segments referenced by a playlist to remain available long enough to avoid interrupting in-progress playback, so cache retention must not be shorter than the playback safety window.
 
@@ -89,18 +89,18 @@ P2P remains an acceleration layer, never the source of truth. HTTP CDN delivery 
 | Variable | Default | Purpose |
 |---|---:|---|
 | LISTEN_ADDR | :8080 | HTTP listener |
-| ORIGIN_URL | empty | primary origin |
-| ORIGIN_URLS | empty | ordered origin list |
-| SHIELD_URLS | empty | upstream cache-shield URLs |
+| ORIGIN_URL | empty | private Backend API base URL; required for readiness and delivery |
+| ORIGIN_URLS | empty | ordered trusted Backend-origin list; used for public-origin failover |
+| SHIELD_URLS | empty | public-cache shield URLs; private viewer-authorized requests bypass shields |
 | EDGE_URLS | empty | deterministic edge-routing pool |
-| ORIGIN_AUTH_TOKEN | empty | upstream bearer token |
+| ORIGIN_AUTH_TOKEN | empty | required CDN-to-Backend service credential; must exactly match Backend `CDN_ORIGIN_AUTH_TOKEN` (minimum 32 bytes) |
 | PURGE_TOKEN | empty | purge API authorization |
 | CACHE_DIR | ./cache | cache directory |
-| MAX_CACHE_BYTES | 64 GiB | disk-backed cache capacity |
-| HOT_CACHE_BYTES | 48 GiB | bounded RAM hot-cache tier; raise only when node RAM can safely support it |
-| SEGMENT_TTL | 30s | segment cache TTL |
+| MAX_CACHE_BYTES | 8 GiB | disk-backed cache capacity |
+| HOT_CACHE_BYTES | 512 MiB | bounded RAM hot-cache tier; raise only when node RAM can safely support it |
+| SEGMENT_TTL | 120s | segment cache TTL (deployment may lower it) |
 | MANIFEST_TTL | 2s | playlist cache TTL |
-| STALE_IF_ERROR | 60s | stale retention after expiry |
+| STALE_IF_ERROR | 120s | stale retention after expiry; never used after authoritative origin denial |
 | MAX_SEGMENT_BYTES | 32 MiB | object size limit |
 | ORIGIN_TIMEOUT | 10s | upstream timeout |
 | MAX_IDLE_CONNS | 2048 | global upstream idle pool |
@@ -108,17 +108,17 @@ P2P remains an acceleration layer, never the source of truth. HTTP CDN delivery 
 | MAX_CONNS_PER_HOST | 512 | per-upstream connection cap |
 | RATE_LIMIT_PER_MIN | 1200 | per-IP rate |
 | RATE_LIMIT_BURST | 300 | per-IP burst |
-| ALLOWED_ORIGINS | empty | optional CORS allow-list |
+| ALLOWED_ORIGINS | Testagram web origins | CORS allow-list |
 | NODE_ID | local | edge identity |
-| TV_PREFETCH_SECONDS | 30s | advertised live media window to warm before playback; reduce upstream work and startup delay |
-| TV_PREFETCH_CONCURRENCY | 4 | bounded concurrent IPTV segment warmers |
-| TV_PREFETCH_TIMEOUT | 12s | hard deadline for each rolling warmup pass |
+| TV_PREFETCH_SECONDS | 30s | legacy TV prefetch tuning; inactive while `/v1/tv/*` is disabled |
+| TV_PREFETCH_CONCURRENCY | 4 | legacy TV prefetch tuning; inactive while `/v1/tv/*` is disabled |
+| TV_PREFETCH_TIMEOUT | 8s | legacy TV prefetch tuning; inactive while `/v1/tv/*` is disabled |
 | PUBLIC_BASE_URL | empty | canonical public media origin, e.g. https://media.testagram.site |
 | MEDIA_URL_PREFIX | /v1 | stable public media path prefix |
-| CLOUDINARY_CLOUD_NAME | empty | Cloudinary cloud used for media-origin fallback |
-| CLOUDINARY_IMAGE_BASE_URL | empty | explicit Cloudinary image delivery origin |
-| CLOUDINARY_VIDEO_BASE_URL | empty | explicit Cloudinary video/HLS delivery origin |
-- `R2_PUBLIC_BASE_URL` — optional Cloudflare R2 public media origin; used after Cloudinary and before legacy Testagram origins.
+| CLOUDINARY_CLOUD_NAME | empty | legacy provider setting; direct delivery fallback is disabled |
+| CLOUDINARY_IMAGE_BASE_URL | empty | legacy provider setting; direct delivery fallback is disabled |
+| CLOUDINARY_VIDEO_BASE_URL | empty | legacy provider setting; direct delivery fallback is disabled |
+- `R2_PUBLIC_BASE_URL` — legacy provider setting; not used by the active request path because every cache miss must be classified by Backend.
 | UPSTASH_REDIS_REST_URL | empty | optional Upstash Redis REST endpoint for control-plane coordination |
 | UPSTASH_REDIS_REST_TOKEN | empty | server-only Upstash Redis token |
 | UPSTASH_LOCK_TTL | 8s | distributed coordination lease |
@@ -158,8 +158,9 @@ Viewer -> Go Testagram CDN -> public cache or authenticated Backend origin
 Backend -> Data Centre -> private object providers (Instabox/MinIO, R2, B2)
 
 The Go CDN's private path forwards a Backend-issued viewer assertion and a
-separate CDN-to-origin service credential. Private responses bypass cache and
-are always `private, no-store`.
+separate CDN-to-origin service credential. The Backend origin must explicitly
+classify the response as `private`; otherwise the CDN rejects it. Private
+responses bypass cache and are always `private, no-store`.
 
 ## XClone / Testagram media compatibility
 
