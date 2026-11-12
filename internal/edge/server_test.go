@@ -479,3 +479,24 @@ func TestPublicMediaOriginOutageDoesNotServeStaleBytes(t *testing.T) {
  if second.Code!=http.StatusBadGateway { t.Fatalf("origin outage status=%d",second.Code) }
  if strings.Contains(second.Body.String(),"previously-public-bytes") { t.Fatal("stale user media was served while Backend origin was unavailable") }
 }
+
+func TestPublicOriginRequestIsCancelledWhenViewerDisconnects(t *testing.T) {
+ started:=make(chan struct{})
+ cancelled:=make(chan struct{})
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  close(started)
+  <-r.Context().Done()
+  close(cancelled)
+ }))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL}
+ srv:=New(cfg)
+ ctx,cancel:=context.WithCancel(context.Background())
+ req:=httptest.NewRequest(http.MethodGet,"/v1/public/disconnect.webp",nil).WithContext(ctx)
+ done:=make(chan struct{})
+ go func(){ defer close(done);srv.Handler().ServeHTTP(httptest.NewRecorder(),req) }()
+ select { case <-started: case <-time.After(time.Second): cancel();t.Fatal("public origin request did not start") }
+ cancel()
+ select { case <-cancelled: case <-time.After(time.Second):t.Fatal("public origin request was not cancelled") }
+ <-done
+}

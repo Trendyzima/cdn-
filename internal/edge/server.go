@@ -182,7 +182,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
  // User media visibility, moderation and deletion are mutable. Do not serve
  // stale bytes on an origin outage: the CDN cannot know whether Backend has
  // revoked public visibility while unavailable.
- data,err:=s.fetchCoalesced(rel,ttl,0)
+ data,err:=s.fetchCoalesced(r.Context(),rel,ttl,0)
  if err!=nil {
   var responseErr *originResponseError
   if errors.As(err,&responseErr) && responseErr.status < 500 {
@@ -206,9 +206,9 @@ func(s *Server)serveEntry(w http.ResponseWriter,r *http.Request,e cache.Entry){
  http.ServeContent(w,r,e.Key,e.ExpiresAt,f)
 }
 
-func(s *Server)fetchCoalesced(key string,ttl,staleFor time.Duration)([]byte,error){
+func(s *Server)fetchCoalesced(ctx context.Context,key string,ttl,staleFor time.Duration)([]byte,error){
  s.mu.Lock()
- if f,ok:=s.fetching[key];ok{s.mu.Unlock();<-f.done;return f.data,f.err}
+ if f,ok:=s.fetching[key];ok{s.mu.Unlock();select{case <-ctx.Done():return nil,ctx.Err();case <-f.done:return f.data,f.err}}
  // A caller may have missed the cache before the current leader published it.
  // Recheck after acquiring the coalescing lock so late arrivals do not start
  // a second origin request.
@@ -218,12 +218,12 @@ func(s *Server)fetchCoalesced(key string,ttl,staleFor time.Duration)([]byte,erro
   return data,readErr
  }
  f:=&fetch{done:make(chan struct{})};s.fetching[key]=f;s.mu.Unlock()
- s.inflight.Add(1);s.upstream.Add(1);f.data,f.err=s.fetchUpstream(key);s.inflight.Add(^uint64(0))
+ s.inflight.Add(1);s.upstream.Add(1);f.data,f.err=s.fetchUpstream(ctx,key);s.inflight.Add(^uint64(0))
  if f.err==nil{if _,e:=s.cache.Put(key,f.data,ttl,staleFor);e!=nil{log.Printf("cache put %s: %v",key,e)}}
  s.mu.Lock();close(f.done);delete(s.fetching,key);s.mu.Unlock();return f.data,f.err
 }
 
-func(s *Server)fetchUpstream(rel string)([]byte,error){
+func(s *Server)fetchUpstream(ctx context.Context,rel string)([]byte,error){
  // Every cache miss, including a public namespace key, is classified by
  // the trusted Backend origin. Direct public-provider fallback would bypass
  // the canonical asset visibility state and is intentionally not used here.
@@ -234,11 +234,11 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
   if s.originBlocked(baseURL){continue}
   b,e:=url.Parse(baseURL);if e!=nil{lastErr=e;continue}
   b.Path=path.Join(b.Path,"internal","cdn","v1",rel)
-  req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
+  req,e:=http.NewRequestWithContext(ctx,http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   if s.cfg.OriginAuthToken!=""{req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)}
   resp,e:=s.client.Do(req)
-  if e!=nil{s.blockOrigin(baseURL);lastErr=e;continue}
+  if e!=nil{if ctx.Err()!=nil{return nil,ctx.Err()};s.blockOrigin(baseURL);lastErr=e;continue}
   if resp.StatusCode<200||resp.StatusCode>=300 {
    resp.Body.Close()
    if resp.StatusCode<500 { return nil,&originResponseError{status:resp.StatusCode} }
