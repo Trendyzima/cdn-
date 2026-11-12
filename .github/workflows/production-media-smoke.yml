@@ -2,17 +2,17 @@ name: Production Media Smoke
 
 on:
   workflow_dispatch:
-  push:
+  workflow_run:
+    workflows: ["Deploy private R2 media Worker"]
+    types: [completed]
     branches: [main]
-    paths:
-      - "cloudflare/**"
-      - ".github/workflows/production-media-smoke.yml"
 
 permissions:
   contents: read
 
 jobs:
   ownership:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
