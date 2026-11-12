@@ -51,7 +51,7 @@ it is not a runtime gateway.
 ### Backend -> Go CDN -> trusted Backend origin -> storage
 - Backend owns upload intent, canonical object key, authorization, visibility, quota, retention and deletion.
 - Backend returns stable media URLs under `https://media.testagram.site/v1/` only when the Go CDN hostname and origin are deployed.
-- Public shared-cache requests use only the explicit `public/` namespace. The trusted origin must explicitly return `X-Testagram-Visibility: public`. Current Backend origin is private-only; Backend issue #205 tracks the required public branch. Until then, public cache misses fail closed and direct provider fallback stays disabled.
+- Requests without viewer assertions may enter shared cache only after Backend checks the canonical asset row and explicitly returns `X-Testagram-Visibility: public`; object-key prefixes are not visibility authority. Current Backend origin is private-only; Backend issue #205 tracks the required public branch. Until then, public cache misses fail closed and direct provider fallback stays disabled.
 - Private Flutter requests send a short-lived Backend assertion in `Authorization: Bearer <assertion>`.
 - Go CDN relays it to the trusted origin as `X-Testagram-Viewer-Authorization` and sends a separate service credential as `X-Testagram-Origin-Auth`. The Backend origin verifies both and checks the canonical asset row.
 - Private requests bypass CDN cache, shield and public-origin fallback. Responses are `private, no-store`.
