@@ -7,19 +7,21 @@ services:
       LISTEN_ADDR: ":8080"
       PUBLIC_BASE_URL: "https://media.testagram.site"
       MEDIA_URL_PREFIX: "/v1"
-      ORIGIN_URL: "http://host.docker.internal:9000"
+      # Private Backend service URL, reachable only on the internal network.
+      ORIGIN_URL: "${TESTAGRAM_BACKEND_INTERNAL_URL:?Set TESTAGRAM_BACKEND_INTERNAL_URL}"
+      # Must match Backend CDN_ORIGIN_AUTH_TOKEN exactly; never commit the value.
+      ORIGIN_AUTH_TOKEN: "${ORIGIN_AUTH_TOKEN:?Set ORIGIN_AUTH_TOKEN}"
       CACHE_DIR: "/app/cache"
       SEGMENT_TTL: "30s"
       MANIFEST_TTL: "2s"
       STALE_IF_ERROR: "120s"
-      TV_PREFETCH_SECONDS: "45s"
-      TV_PREFETCH_CONCURRENCY: "4"
-      TV_PREFETCH_TIMEOUT: "12s"
       MAX_CACHE_BYTES: "8589934592"
       HOT_CACHE_BYTES: "536870912"
       MAX_SEGMENT_BYTES: "33554432"
-      NODE_ID: "local-edge"
+      NODE_ID: "${NODE_ID:-local-edge}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://testagram.site,https://www.testagram.site}"
     volumes:
       - edge-cache:/app/cache
+    restart: unless-stopped
 volumes:
   edge-cache:
