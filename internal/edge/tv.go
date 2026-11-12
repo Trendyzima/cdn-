@@ -247,7 +247,7 @@ func (s *Server) signTVToken(scope,src string,exp int64) string {
 }
 
 func (s *Server) authorizedTV(scope,src,token string) bool {
-  if s.cfg.PlaybackSecret=="" { return false }
+  if len(s.cfg.PlaybackSecret) < 32 { return false }
   parts:=strings.Split(token,"."); if len(parts)!=3 || parts[1]!=scope { return false }
   exp,err:=parsePositiveInt64(parts[0]); if err!=nil || exp<time.Now().Unix() { return false }
   return hmac.Equal([]byte(s.signTVToken(scope,src,exp)),[]byte(token))
