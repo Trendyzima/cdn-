@@ -149,7 +149,7 @@ func TestPrivateMediaRequestWithoutViewerIdentityIsRejectedByOrigin(t *testing.T
 func TestBackendAssertionBypassesCacheAndForwardsIdentity(t *testing.T) {
  seen:=false
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-  if r.Header.Get("X-Testagram-Origin-Auth")!="origin-secret"{t.Errorf("missing service credential")}
+  if r.URL.Path!="/internal/cdn/v1/users/u1/private.webp"{t.Errorf("unexpected trusted origin path: %s",r.URL.Path)}\n  if r.Header.Get("X-Testagram-Origin-Auth")!="origin-secret"{t.Errorf("missing service credential")}
   if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature"{t.Errorf("viewer identity not forwarded")}
   seen=true;w.Header().Set("Content-Type","image/webp");w.Write([]byte("private-bytes"))
  }))
