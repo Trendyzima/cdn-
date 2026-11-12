@@ -174,10 +174,14 @@ Supported compatibility aliases include `/media/*`, `/users/*`,
 and `/videos/*`. The canonical API path is `/v1/<object-key>`.
 
 Public shared-cache delivery is restricted to the explicit `public/`
-namespace and requires the trusted origin to return
-`X-Testagram-Visibility: public`. Unclassified, private or denied origin
-responses are never cached or served stale. A 401/403/404 origin response
-invalidates a stale public cache entry.
+namespace and requires the trusted Backend origin to return
+`X-Testagram-Visibility: public`. The current Backend `/internal/cdn/v1/*`
+handler is private-only, so the public cache-miss integration remains blocked
+by [Backend issue #205](https://github.com/Trendyzima/Testagram-backend-/issues/205).
+The CDN fails closed until that public-origin contract is implemented; direct
+Cloudinary/R2 fallbacks are disabled because they bypass Backend visibility.
+Unclassified, private or denied origin responses are never cached or served
+stale. A 401/403/404 origin response invalidates a stale public cache entry.
 
 Private media requests carry a Backend-issued assertion in
 `Authorization: Bearer <assertion>`. The Go CDN forwards it to the trusted
