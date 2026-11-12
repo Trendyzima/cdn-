@@ -42,9 +42,9 @@ rather than bypassing Backend with Cloudinary/R2 direct URLs.
   record before streaming.
 - Private media bypasses disk cache, hot cache, shields and public-origin
   fallbacks; it is always `private, no-store`.
-- Only the explicit `public/` namespace can enter shared cache, and only when
-  the origin explicitly classifies the object with
-  `X-Testagram-Visibility: public`.
+- Unauthenticated requests may enter shared cache only after Backend checks
+  the canonical asset row and explicitly classifies a ready public object with
+  `X-Testagram-Visibility: public`; key prefixes are not visibility authority.
 - Missing, expired, malformed, wrong-viewer or wrong-object assertions fail
   closed at the Backend origin.
 - CDN cache purge is not object deletion. Backend owns deletion tombstones and
@@ -53,7 +53,9 @@ rather than bypassing Backend with Cloudinary/R2 direct URLs.
 ## Cache and replica separation
 
 CDN disk/RAM cache and shields are disposable delivery accelerators, never
-counted as durable media replicas. Cache purge is not object deletion.
+counted as durable media replicas. Mutable user media is not served stale after
+expiry or origin failure. Browser cache lifetimes are zero and shared cache
+lifetimes are bounded. Cache purge is not object deletion.
 Backend owns deletion tombstones; Data Centre confirms provider/node deletion
 receipts and performs replica repair/reconciliation.
 
