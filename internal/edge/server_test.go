@@ -291,6 +291,8 @@ func TestIPTVCORSContract(t *testing.T) {
  if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://testagram.site" { t.Fatalf("allow-origin=%q", got) }
  if got := rr.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Range") || !strings.Contains(got, "Authorization") { t.Fatalf("allow-headers=%q", got) }
  if got := rr.Header().Get("Access-Control-Max-Age"); got != "600" { t.Fatalf("max-age=%q", got) }
+ if got := rr.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got,"If-Range") || !strings.Contains(got,"If-None-Match") || !strings.Contains(got,"If-Modified-Since") { t.Fatalf("conditional media request headers not allowed: %q",got) }
+ if got := rr.Header().Get("Access-Control-Expose-Headers"); !strings.Contains(got,"Last-Modified") || !strings.Contains(got,"Cache-Status") { t.Fatalf("media response metadata not exposed: %q",got) }
 
  blocked := httptest.NewRecorder()
  blockedReq := httptest.NewRequest(http.MethodOptions, "/v1/tv/live/seg.ts", nil)
