@@ -10,3 +10,9 @@ bucket_name = "testagram-media"
 
 [observability]
 enabled = true
+
+# Only route Backend-asserted private user media through this Worker.
+# Do not capture public media paths until their delivery contract is implemented.
+[[routes]]
+pattern = "media.testagram.site/v1/users/*"
+zone_name = "testagram.site"
