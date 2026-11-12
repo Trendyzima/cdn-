@@ -8,11 +8,11 @@ The R2 bucket must remain private. Bind it to the Worker as `MEDIA_BUCKET`; do n
 
 ## Hostname ownership — mandatory before deployment
 
-The Go CDN repository reserves `media.testagram.site` for the Go CDN data plane. Do not attach this Worker to that hostname or add a competing DNS/Worker route.
+The Go CDN reserves `media.testagram.site` for the Go CDN data plane. This repository owns the private R2 Worker source and its deployment workflow; do not attach this Worker to the Go CDN hostname or create a competing DNS/Worker route.
 
 Choose and approve a distinct hostname for the private R2 Worker (for example, `r2-private.testagram.site`) and record it in the API service registry, Backend environment and Cloudflare zone runbook. Do not create DNS records until the current live routes, target origin, TLS and owner are checked.
 
-`wrangler.toml` intentionally has `workers_dev = false` and no custom-domain route. This prevents accidental public activation. Add the approved custom domain/route only in a reviewed deployment change after DNS ownership and origin separation are confirmed.
+`wrangler.toml` intentionally has `workers_dev = false` and no custom-domain route. The manual GitHub Actions deployment workflow publishes the Worker script only; it does not attach a hostname or change DNS. This keeps deployment separate from public activation. Add a distinct approved custom domain/route only in a reviewed change after DNS ownership and origin separation are confirmed.
 
 ## Required secret and binding
 
@@ -48,4 +48,4 @@ Worker acceptance tests must prove missing/weak secret, missing/expired/malforme
 7. Confirm the Go CDN hostname and routes are unchanged.
 8. Record Worker deployment version, route, R2 bucket identifier (not credentials), secret rotation reference, smoke-test evidence and rollback procedure.
 
-No production deployment, DNS mutation, bucket ACL change or secret operation is performed by this source repository PR.
+The repository's manual deployment workflow requires `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` and `CDN_MEDIA_ASSERTION_SECRET` as GitHub Actions secrets. It runs the Worker tests, deploys the script without a public route, and uploads the assertion secret as a Worker secret. It does not mutate DNS, bucket ACLs or custom-domain routes.
