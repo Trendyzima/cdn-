@@ -216,7 +216,7 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
  for _,baseURL:=range bases{
   if s.originBlocked(baseURL){continue}
   b,e:=url.Parse(baseURL);if e!=nil{lastErr=e;continue}
-  b.Path=path.Join(b.Path,"v1",rel)
+  b.Path=path.Join(b.Path,"internal","cdn","v1",rel)
   req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   if s.cfg.OriginAuthToken!=""{req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)}
