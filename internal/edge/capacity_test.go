@@ -20,6 +20,7 @@ func TestCapacity1MLogicalViewers(t *testing.T) {
  var originCalls atomic.Int64
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   originCalls.Add(1)
+  w.Header().Set("X-Testagram-Visibility","public")
   w.Header().Set("Content-Type","video/mp2t")
   _,_=w.Write(make([]byte,1024))
  }))
@@ -27,7 +28,7 @@ func TestCapacity1MLogicalViewers(t *testing.T) {
 
  cfg:=config.Config{
   CacheDir:t.TempDir(),MaxCacheBytes:64<<20,SegmentTTL:time.Minute,ManifestTTL:time.Second,
-  StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},
+  StaleIfError:time.Minute,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},OriginAuthToken:"test-origin-token",
   NodeID:"capacity-test",RateLimitPerMin:0,RateLimitBurst:0,
   OriginTimeout:time.Second,MaxIdleConns:4096,MaxIdleConnsPerHost:4096,
  }
