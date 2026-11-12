@@ -2,6 +2,11 @@ name: Deploy private R2 media Worker
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "cloudflare/**"
+      - ".github/workflows/deploy-private-r2-worker.yml"
 
 permissions:
   contents: read
@@ -39,7 +44,7 @@ jobs:
         working-directory: cloudflare
         run: npm test
 
-      - name: Deploy Worker without attaching a public route
+      - name: Deploy only the Backend-asserted private user-media route
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
