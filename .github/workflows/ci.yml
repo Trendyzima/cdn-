@@ -9,6 +9,8 @@ on:
 permissions:
   contents: read
   packages: write
+  attestations: write
+  id-token: write
 
 concurrency:
   group: cdn-ci-${{ github.ref }}
@@ -68,9 +70,22 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build container
         run: |
-          docker build -f Dockerfile.runtime -t ghcr.io/trendyzima/testagram-edge:${{ github.sha }} .
-          docker tag ghcr.io/trendyzima/testagram-edge:${{ github.sha }} ghcr.io/trendyzima/testagram-edge:latest
+          docker build -f Dockerfile.runtime --label org.opencontainers.image.revision=${{ github.sha }} --label org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }} -t ghcr.io/trendyzima/testagram-edge:${{ github.sha }} .
       - name: Push container
         run: |
           docker push ghcr.io/trendyzima/testagram-edge:${{ github.sha }}
-          docker push ghcr.io/trendyzima/testagram-edge:latest
+      - name: Resolve immutable image digest
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull ghcr.io/trendyzima/testagram-edge:${GITHUB_SHA}
+          digest="$(docker image inspect ghcr.io/trendyzima/testagram-edge:${GITHUB_SHA} --format='{{index .RepoDigests 0}}' | sed 's/.*@//')"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest container provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/trendyzima/testagram-edge
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
