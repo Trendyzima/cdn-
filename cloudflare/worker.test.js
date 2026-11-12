@@ -70,3 +70,14 @@ test("health and readiness expose Worker identity",async()=>{
   assert.equal(health.status,200);assert.equal(ready.status,200);
   assert.equal(health.headers.get("x-testagram-cdn-version"),"2026-11-12-r2-backend-assertion-v1");
 });
+
+test("accepts Appwrite owner IDs containing underscores and periods",async()=>{
+  const objectKey="users/user_123.test/0123456789abcdef0123456789abcdef";
+  const token=assertion({objectKey,subject:"user_123.test"});
+  const res=await worker.fetch(request("/v1/"+objectKey,token),env(async requested=>{
+    assert.equal(requested,objectKey);
+    return makeObject("appwrite-owner-media");
+  }));
+  assert.equal(res.status,200);
+  assert.equal(await res.text(),"appwrite-owner-media");
+});
