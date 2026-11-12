@@ -293,7 +293,8 @@ func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization,meth
   req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)
   if rangeHeader!="" { req.Header.Set("Range",rangeHeader) }
   if ifRange!="" { req.Header.Set("If-Range",ifRange) }
-  privateClient:=&http.Client{Transport:s.client.Transport,Timeout:s.cfg.OriginTimeout,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
+  // Bound connection and response-header setup through the transport, but do not apply a whole-body timeout: large media streams may legitimately outlive OriginTimeout. The incoming request context still cancels the upstream stream when the viewer disconnects.
+  privateClient:=&http.Client{Transport:s.client.Transport,Timeout:0,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
   resp,e:=privateClient.Do(req);if e!=nil{lastErr=e;continue}
   if resp.StatusCode!=http.StatusOK && resp.StatusCode!=http.StatusPartialContent && resp.StatusCode!=http.StatusNotModified && resp.StatusCode!=http.StatusRequestedRangeNotSatisfiable {
    status:=resp.StatusCode
