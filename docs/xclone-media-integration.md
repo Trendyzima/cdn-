@@ -6,7 +6,7 @@
 2. Backend creates the canonical object key and metadata row and coordinates storage with Data Centre.
 3. Data Centre owns placement, replication, repair and deletion across configured providers. Provider credentials remain server-side.
 4. Backend returns canonical CDN URLs only after the object is ready and its visibility is known.
-5. Public objects use the explicit `public/` namespace and may enter the Go CDN shared cache only when the trusted origin confirms `X-Testagram-Visibility: public`.
+5. Requests without viewer assertions may enter the Go CDN shared cache only after Backend checks the canonical asset row and confirms `visibility=public` and `status=ready` with `X-Testagram-Visibility: public`; object-key prefixes are not visibility authority.
 6. Private objects require a short-lived Backend viewer assertion on each media request. The Go CDN relays it to Backend's private `/internal/cdn/v1/{key...}` origin route and never caches the private bytes.
 
 The CDN does not mint media URLs, decide visibility, own media records or count cached bytes as durable replicas.
@@ -34,8 +34,9 @@ For private media:
   `CDN_ORIGIN_AUTH_TOKEN`.
 - Backend verifies both credentials, validates the canonical asset row and
   streams the object with `private, no-store`.
-- Private requests bypass Go CDN cache, stale fallback, public R2/Cloudinary
-  fallback and any shared cache tier.
+- Private requests bypass Go CDN cache, shields and all public-origin fallback;
+  responses are no-store. Mutable user media is never served stale after an
+  origin outage.
 
 For public media, a request without a viewer assertion is cache eligible only
 after Backend checks the canonical asset row and explicitly returns
@@ -45,7 +46,9 @@ a visibility signal. Current Backend origin is private-only; Backend issue
 #205 tracks the missing public branch. Until it lands, public CDN cache misses
 fail closed. Direct Cloudinary/R2 fallback is disabled to avoid bypassing
 canonical visibility. Authorization, visibility and deletion denials are
-authoritative and must invalidate any stale cached public copy.
+authoritative. The CDN invalidates its local copy on explicit denials; Backend
+must also publish authenticated purge events for visibility/deletion changes.
+That purge integration is part of Backend issue #205.
 
 ## TV and HLS
 
