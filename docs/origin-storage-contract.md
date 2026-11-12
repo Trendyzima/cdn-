@@ -27,6 +27,12 @@ header. The current Go CDN origin client speaks the Backend internal HTTP
 gateway contract; it is not an S3 Signature V4 client. Do not point it directly
 at MinIO, R2 or B2 S3 endpoints until an adapter is implemented and tested.
 
+**Public origin blocker:** current Backend `/internal/cdn/v1/{key...}` only
+serves private assets with a viewer assertion. Backend issue #205 tracks a
+service-authenticated public branch that checks canonical `visibility=public`
+and `status=ready` before returning bytes. The CDN deliberately fails closed
+rather than bypassing Backend with Cloudinary/R2 direct URLs.
+
 ## Authorization and cache isolation
 
 - Backend authorizes viewer, object, action, visibility and expiry.
