@@ -173,11 +173,13 @@ Supported compatibility aliases include `/media/*`, `/users/*`,
 `/profiles/*`, `/uploads/*`, `/avatars/*`, `/covers/*`, `/photos/*`,
 and `/videos/*`. The canonical API path is `/v1/<object-key>`.
 
-Public shared-cache delivery is restricted to the explicit `public/`
-namespace and requires the trusted Backend origin to return
-`X-Testagram-Visibility: public`. The current Backend `/internal/cdn/v1/*`
-handler is private-only, so the public cache-miss integration remains blocked
-by [Backend issue #205](https://github.com/Trendyzima/Testagram-backend-/issues/205).
+Unauthenticated cache misses are eligible for shared caching only when the
+trusted Backend origin explicitly returns `X-Testagram-Visibility: public`
+after checking the canonical asset row. A path prefix is not proof of
+visibility; Testagram media keys commonly use `users/<owner>/<id>` for both
+public and private assets. The current Backend `/internal/cdn/v1/*` handler is
+private-only, so the public cache-miss integration remains blocked by
+[Backend issue #205](https://github.com/Trendyzima/Testagram-backend-/issues/205).
 The CDN fails closed until that public-origin contract is implemented; direct
 Cloudinary/R2 fallbacks are disabled because they bypass Backend visibility.
 Unclassified, private or denied origin responses are never cached or served
