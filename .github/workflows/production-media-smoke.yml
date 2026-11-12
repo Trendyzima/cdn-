@@ -1,8 +1,7 @@
 name: Canonical Go CDN Production Smoke
 
-# The Go CDN deployment is owned by XClone. This workflow is intentionally
-# manual so deploying the separate, unrouted R2 Worker cannot trigger a false
-# Go-CDN production smoke run.
+# This smoke targets the canonical Go CDN. It is manual until the Data Centre
+# deployment controller invokes it after promoting a pinned image digest.
 on:
   workflow_dispatch:
 
@@ -29,7 +28,7 @@ jobs:
           cat /tmp/health.json
           test "$status" = "200"
           grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/health.headers
-          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-10-08-go-edge-iptv-v1[[:space:]]*$' /tmp/health.headers
+          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' /tmp/health.headers
           grep -q '"ok":true' /tmp/health.json
           grep -q '"service":"testagram-cdn"' /tmp/health.json
 
