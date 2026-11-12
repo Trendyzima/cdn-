@@ -3,6 +3,8 @@ package edge
 import (
  "fmt"
  "encoding/json"
+ "context"
+ "sync/atomic"
   "net/http"
  "net/http/httptest"
  "testing"
@@ -142,7 +144,7 @@ func TestPrivateMediaRequestWithoutViewerIdentityIsRejectedByOrigin(t *testing.T
  defer origin.Close()
  cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};s:=New(cfg);rr:=httptest.NewRecorder()
  s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/users/u1/private.webp",nil))
- if rr.Code!=http.StatusBadGateway {t.Fatalf("private unauthenticated status=%d",rr.Code)}
+ if rr.Code!=http.StatusUnauthorized {t.Fatalf("private unauthenticated status=%d",rr.Code)}
  if strings.Contains(rr.Header().Get("Cache-Control"),"public"){t.Fatalf("private response publicly cacheable: %q",rr.Header().Get("Cache-Control"))}
 }
 
@@ -229,7 +231,7 @@ func TestPublicAuthorizationDenialCannotFailOverToPublicCache(t *testing.T) {
  defer permissive.Close()
  cfg:=testConfig(t);cfg.OriginURLs=[]string{denied.URL,permissive.URL}
  s:=New(cfg);rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/users/u1/private.webp",nil))
- if rr.Code!=http.StatusBadGateway||secondHit{t.Fatalf("origin denial failed open: status=%d secondOriginHit=%v",rr.Code,secondHit)}
+ if rr.Code!=http.StatusForbidden||secondHit{t.Fatalf("origin denial failed open: status=%d secondOriginHit=%v",rr.Code,secondHit)}
 }
 
 func TestUnknownVisibilityCannotFailOverToPublicOrigin(t *testing.T) {
@@ -336,4 +338,80 @@ func TestHealthIdentifiesCDNService(t *testing.T) {
  var body map[string]any
  if err := json.NewDecoder(rr.Body).Decode(&body); err != nil { t.Fatal(err) }
  if body["ok"] != true || body["service"] != "testagram-cdn" { t.Fatalf("unexpected health contract: %#v", body) }
+}
+
+func TestTVPlaybackRouteIsDisabledUntilBackendGrantContractExists(t *testing.T) {
+ s:=New(testConfig(t))
+ rr:=httptest.NewRecorder()
+ req:=httptest.NewRequest(http.MethodGet,"/v1/tv/channel-1/segment.ts?src=https%3A%2F%2Fexample.com%2Fseg.ts&token=legacy",nil)
+ s.Handler().ServeHTTP(rr,req)
+ if rr.Code!=http.StatusServiceUnavailable { t.Fatalf("TV route status=%d body=%s",rr.Code,rr.Body.String()) }
+ if rr.Header().Get("Cache-Control")!="no-store" { t.Fatalf("TV disabled response cache policy=%q",rr.Header().Get("Cache-Control")) }
+}
+
+func TestPublicAuthorizationDenialDoesNotServeStaleCache(t *testing.T) {
+ var denied atomic.Bool
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  if denied.Load() { http.Error(w,"visibility revoked",http.StatusForbidden); return }
+  w.Header().Set("X-Testagram-Visibility","public")
+  _,_=w.Write([]byte("previously-public-bytes"))
+ }))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.SegmentTTL=15*time.Millisecond;cfg.StaleIfError=time.Minute
+ s:=New(cfg)
+ first:=httptest.NewRecorder()
+ s.Handler().ServeHTTP(first,httptest.NewRequest(http.MethodGet,"/v1/public/logo.webp",nil))
+ if first.Code!=http.StatusOK || first.Body.String()!="previously-public-bytes" { t.Fatalf("initial public response status=%d body=%q",first.Code,first.Body.String()) }
+ time.Sleep(25*time.Millisecond)
+ denied.Store(true)
+ second:=httptest.NewRecorder()
+ s.Handler().ServeHTTP(second,httptest.NewRequest(http.MethodGet,"/v1/public/logo.webp",nil))
+ if second.Code!=http.StatusForbidden { t.Fatalf("revoked public object status=%d body=%q",second.Code,second.Body.String()) }
+ if strings.Contains(second.Body.String(),"previously-public-bytes") { t.Fatal("stale bytes were served after authoritative visibility denial") }
+}
+
+func TestPublicOriginRedirectIsNotFollowed(t *testing.T) {
+ leaked:=atomic.Bool{}
+ attacker:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) { leaked.Store(true); w.WriteHeader(http.StatusOK) }))
+ defer attacker.Close()
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  if r.Header.Get("X-Testagram-Origin-Auth")!="origin-secret" { t.Error("origin service credential missing from initial request") }
+  http.Redirect(w,r,attacker.URL+"/capture",http.StatusFound)
+ }))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.OriginAuthToken="origin-secret"
+ s:=New(cfg)
+ rr:=httptest.NewRecorder()
+ s.Handler().ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/public/redirect.webp",nil))
+ if leaked.Load() { t.Fatal("origin service credential was forwarded across redirect") }
+ if rr.Code!=http.StatusBadGateway { t.Fatalf("redirect response status=%d",rr.Code) }
+}
+
+func TestPrivateOriginRequestIsCancelledWhenViewerDisconnects(t *testing.T) {
+ started:=make(chan struct{})
+ cancelled:=make(chan struct{})
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  close(started)
+  <-r.Context().Done()
+  close(cancelled)
+ }))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL}
+ s:=New(cfg)
+ ctx,cancel:=context.WithCancel(context.Background())
+ req:=httptest.NewRequest(http.MethodGet,"/v1/users/u1/private.mp4",nil).WithContext(ctx)
+ req.Header.Set("Authorization","Bearer viewer-assertion")
+ done:=make(chan struct{})
+ go func(){ defer close(done); s.Handler().ServeHTTP(httptest.NewRecorder(),req) }()
+ select { case <-started: case <-time.After(time.Second): cancel(); t.Fatal("origin request did not start") }
+ cancel()
+ select { case <-cancelled: case <-time.After(time.Second): t.Fatal("origin stream was not cancelled with viewer request") }
+ <-done
+}
+
+func TestReadyRequiresPrivateOriginEvenWhenShieldExists(t *testing.T) {
+ cfg:=testConfig(t);cfg.OriginURLs=nil;cfg.ShieldURLs=[]string{"https://shield.example"};cfg.OriginAuthToken="origin-secret"
+ s:=New(cfg);rr:=httptest.NewRecorder()
+ s.ready(rr,httptest.NewRequest(http.MethodGet,"/readyz",nil))
+ if rr.Code!=http.StatusServiceUnavailable { t.Fatalf("ready accepted shield-only config for private media: %d",rr.Code) }
 }
