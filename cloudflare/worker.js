@@ -1,4 +1,4 @@
-const WORKER_VERSION = "2026-11-11-r2-viewer-scoped-token-3";
+const WORKER_VERSION = "2026-11-12-r2-backend-assertion-v1";
 const LEGACY_PREFIXES = ["/media/","/users/","/profiles/","/uploads/","/avatars/","/covers/","/photos/","/videos/"];
 
 function keyFromPath(p) {
@@ -18,43 +18,36 @@ function keyFromPath(p) {
   }
   return decoded.join("/");
 }
-async function authorizedPrivate(key, token, secret) {
-  // This Worker is the protected R2 delivery surface. Never interpret a
-  // missing signing secret as permission to serve every object publicly.
-  // Public assets must use the explicitly public delivery path, not this
-  // private-media Worker.
-  if (typeof secret !== "string" || secret.length < 32) return { ok: false, private: true };
-  if (!token) return { ok: false, private: true };
+async function authorizedPrivate(key, authorization, secret) {
+  if (typeof secret !== "string" || new TextEncoder().encode(secret).length < 32) return {ok:false,private:true};
+  if (typeof authorization !== "string" || !authorization.startsWith("Bearer ") || authorization.length > 8192) return {ok:false,private:true};
+  const token = authorization.slice(7).trim();
   const parts = token.split(".");
-  if (!/^[0-9]+$/.test(parts[0] || "")) return { ok: false, private: true };
-  const exp = Number(parts[0]);
-  if (!Number.isSafeInteger(exp) || exp < Math.floor(Date.now() / 1000)) return { ok: false, private: true };
-  let message;
-  let signature;
-  if (parts.length === 4) {
-    const viewerId = parts[1];
-    const visibility = parts[2];
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(viewerId) || visibility !== "private" || !/^[0-9a-f]{64}$/.test(parts[3])) {
-      return { ok: false, private: true };
-    }
-    message = key + "|" + viewerId + "|" + visibility + "|" + parts[0];
-    signature = parts[3];
-  } else if (parts.length === 2 && /^[0-9a-f]{64}$/.test(parts[1])) {
-    // Backward compatibility for already-issued short-lived links. New Backend
-    // assertions must use the viewer- and visibility-scoped four-part format.
-    message = key + "|" + parts[0];
-    signature = parts[1];
-  } else {
-    return { ok: false, private: true };
-  }
-  const keyData = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), {name:"HMAC",hash:"SHA-256"}, false, ["verify"]);
-  const valid = await crypto.subtle.verify("HMAC", keyData, hexToBytes(signature), new TextEncoder().encode(message));
-  return { ok: valid, private: true };
-}
-function hexToBytes(hex) {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
+  if (parts.length !== 3 || parts[0] !== "v1") return {ok:false,private:true};
+  let signature, payload;
+  try {
+    const decode = value => {
+      const raw = atob(value.replace(/-/g,"+").replace(/_/g,"/") + "=".repeat((4-value.length%4)%4));
+      return Uint8Array.from(raw, ch => ch.charCodeAt(0));
+    };
+    signature = decode(parts[2]);
+    payload = JSON.parse(new TextDecoder().decode(decode(parts[1])));
+  } catch { return {ok:false,private:true}; }
+  if (signature.length !== 32) return {ok:false,private:true};
+  const keyData = await crypto.subtle.importKey("raw",new TextEncoder().encode(secret),{name:"HMAC",hash:"SHA-256"},false,["verify"]);
+  let valid = false;
+  try { valid = await crypto.subtle.verify("HMAC",keyData,signature,new TextEncoder().encode("v1."+parts[1])); } catch {}
+  if (!valid) return {ok:false,private:true};
+  const now = Math.floor(Date.now()/1000);
+  const ownerMatch = /^users\/([A-Za-z0-9-]{1,128})\/[a-f0-9]{32}$/.exec(key);
+  const claimsValid = payload && payload.v === "v1" && payload.iss === "testagram-backend" &&
+    payload.aud === "testagram-cdn" && payload.visibility === "private" &&
+    typeof payload.sub === "string" && ownerMatch && ownerMatch[1] === payload.sub &&
+    payload.key === key && Number.isSafeInteger(payload.iat) && Number.isSafeInteger(payload.exp) &&
+    payload.iat > 0 && payload.iat <= now + 30 && payload.exp > now &&
+    payload.exp > payload.iat && payload.exp - payload.iat <= 300 &&
+    typeof payload.jti === "string" && /^[a-f0-9]{32}$/.test(payload.jti);
+  return {ok:!!claimsValid,private:true};
 }
 function type(k) {
   const e = k.toLowerCase().split(".").pop();
@@ -95,7 +88,9 @@ async function objectResponse(req, env, key) {
   if (!key || key.length > 512 || key.includes("\\") || key.includes("..") || key.startsWith("/")) return json({error:"Not found"},404);
   const segments = key.split("/");
   if (segments.length < 3 || !["users","profiles","uploads","avatars","covers","photos","videos","media"].includes(segments[0])) return json({error:"Not found"},404);
-  const auth = await authorizedPrivate(key, new URL(req.url).searchParams.get("token") || "", env.PLAYBACK_SECRET || "");
+  const url = new URL(req.url);
+  if (url.searchParams.has("token")) return json({error:"Query-string media tokens are not supported"},400);
+  const auth = await authorizedPrivate(key, req.headers.get("Authorization") || "", env.CDN_MEDIA_ASSERTION_SECRET || "");
   if (!auth.ok) return json({error:"Unauthorized"},401,{"cache-control":"no-store"});
   const parsedRange = range(req.headers.get("Range"));
   if (parsedRange.kind === "invalid") return json({error:"Range not satisfiable"},416,{"content-range":"bytes */0"});

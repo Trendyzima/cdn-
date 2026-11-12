@@ -144,25 +144,34 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
    http.Error(w,"trusted origin authentication is not configured",http.StatusServiceUnavailable)
    return
   }
-  data,contentType,err:=s.fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization)
+  resp,err:=s.fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization,r.Method,r.Header.Get("Range"),r.Header.Get("If-Range"))
   if err!=nil {
    status:=http.StatusBadGateway
    var responseErr *originResponseError
    if errors.As(err,&responseErr) {
-    if responseErr.status==http.StatusUnauthorized||responseErr.status==http.StatusForbidden {status=http.StatusForbidden}
-    if responseErr.status==http.StatusNotFound||responseErr.status==http.StatusGone {status=http.StatusNotFound}
+    switch responseErr.status {
+    case http.StatusUnauthorized,http.StatusForbidden: status=http.StatusForbidden
+    case http.StatusNotFound,http.StatusGone: status=http.StatusNotFound
+    case http.StatusRequestedRangeNotSatisfiable: status=http.StatusRequestedRangeNotSatisfiable
+    case http.StatusRequestEntityTooLarge: status=http.StatusRequestEntityTooLarge
+    }
    }
    http.Error(w,"media authorization or origin unavailable",status); return
   }
-  if contentType!="" { w.Header().Set("Content-Type",contentType) } else { setType(w,rel) }
+  defer resp.Body.Close()
+  for _,name:=range []string{"Content-Type","Content-Length","Content-Range","Accept-Ranges","ETag","Last-Modified"} {
+   if value:=resp.Header.Get(name);value!="" { w.Header().Set(name,value) }
+  }
   w.Header().Set("Cache-Control","private, no-store")
   w.Header().Set("CDN-Cache-Control","no-store")
   w.Header().Set("Vary","Authorization, Range")
   w.Header().Set("X-Cache","BYPASS")
   w.Header().Set("Cache-Status","testagram; fwd=bypass")
   if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }
-  s.served.Add(uint64(len(data)))
-  http.ServeContent(w,r,rel,time.Time{},bytes.NewReader(data))
+  w.WriteHeader(resp.StatusCode)
+  if r.Method!=http.MethodHead && resp.StatusCode!=http.StatusNotModified {
+   if n,copyErr:=io.Copy(w,resp.Body);copyErr!=nil { log.Printf("private media stream interrupted after %d bytes for %s: %v",n,rel,copyErr) } else { s.served.Add(uint64(n)) }
+  }
   return
  }
  if ok, status := validateRangeHeader(r.Header.Get("Range"), s.cfg.MaxSegmentBytes); !ok {
@@ -216,7 +225,7 @@ func(s *Server)fetchUpstream(rel string)([]byte,error){
  for _,baseURL:=range bases{
   if s.originBlocked(baseURL){continue}
   b,e:=url.Parse(baseURL);if e!=nil{lastErr=e;continue}
-  b.Path=path.Join(b.Path,"v1",rel)
+  b.Path=path.Join(b.Path,"internal","cdn","v1",rel)
   req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   if s.cfg.OriginAuthToken!=""{req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)}
@@ -270,31 +279,48 @@ func isExplicitPublicPath(rel string) bool {
  return strings.SplitN(strings.TrimPrefix(rel,"/"),"/",2)[0]=="public"
 }
 
-func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization string)([]byte,string,error){
+const maxPrivateMediaObjectBytes int64 = 1 << 30
+
+func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization,method,rangeHeader,ifRange string)(*http.Response,error){
  bases:=append([]string{},s.cfg.OriginURLs...)
  var lastErr error
  for _,baseURL:=range bases {
   b,e:=url.Parse(baseURL);if e!=nil{lastErr=e;continue}
-  b.Path=path.Join(b.Path,"v1",rel)
-  req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
+  b.Path=path.Join(b.Path,"internal","cdn","v1",rel)
+  req,e:=http.NewRequest(method,b.String(),nil);if e!=nil{lastErr=e;continue}
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   req.Header.Set("X-Testagram-Viewer-Authorization",viewerAuthorization)
   req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)
-  privateClient:=&http.Client{Transport:s.client.Transport,Timeout:s.cfg.OriginTimeout,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
+  if rangeHeader!="" { req.Header.Set("Range",rangeHeader) }
+  if ifRange!="" { req.Header.Set("If-Range",ifRange) }
+  // Bound connection and response-header setup through the transport, but do not apply a whole-body timeout: large media streams may legitimately outlive OriginTimeout. The incoming request context still cancels the upstream stream when the viewer disconnects.
+  privateClient:=&http.Client{Transport:s.client.Transport,Timeout:0,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
   resp,e:=privateClient.Do(req);if e!=nil{lastErr=e;continue}
-  if resp.StatusCode<200||resp.StatusCode>=300 {
+  if resp.StatusCode!=http.StatusOK && resp.StatusCode!=http.StatusPartialContent && resp.StatusCode!=http.StatusNotModified && resp.StatusCode!=http.StatusRequestedRangeNotSatisfiable {
+   status:=resp.StatusCode
    resp.Body.Close()
-   if resp.StatusCode<500 { return nil,"",&originResponseError{status:resp.StatusCode} }
-   lastErr=fmt.Errorf("origin authorization returned %d",resp.StatusCode);continue
+   if status<500 { return nil,&originResponseError{status:status} }
+   lastErr=fmt.Errorf("origin authorization returned %d",status);continue
   }
-  data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1))
-  contentType:=resp.Header.Get("Content-Type");resp.Body.Close()
-  if e!=nil{lastErr=e;continue}
-  if int64(len(data))>s.cfg.MaxSegmentBytes{lastErr=fmt.Errorf("object exceeds max size");continue}
-  return data,contentType,nil
+  if resp.StatusCode!=http.StatusNotModified {
+   objectSize:=int64(-1)
+   contentRange:=resp.Header.Get("Content-Range")
+   if contentRange!="" {
+    slash:=strings.LastIndex(contentRange,"/")
+    if slash<0 { resp.Body.Close();return nil,fmt.Errorf("origin returned malformed Content-Range") }
+    parsed,parseErr:=strconv.ParseInt(contentRange[slash+1:],10,64)
+    if parseErr!=nil||parsed<0 { resp.Body.Close();return nil,fmt.Errorf("origin returned malformed Content-Range size") }
+    objectSize=parsed
+   } else if resp.ContentLength>=0 {
+    objectSize=resp.ContentLength
+   }
+   if objectSize<0 { resp.Body.Close();return nil,fmt.Errorf("origin omitted a trustworthy media object size") }
+   if objectSize>maxPrivateMediaObjectBytes { resp.Body.Close();return nil,&originResponseError{status:http.StatusRequestEntityTooLarge} }
+  }
+  return resp,nil
  }
  if lastErr==nil{lastErr=fmt.Errorf("no trusted origin configured")}
- return nil,"",lastErr
+ return nil,lastErr
 }
 func(s *Server)originBlocked(o string)bool{s.originsMu.Lock();defer s.originsMu.Unlock();return time.Now().Before(s.badUntil[o])}
 func(s *Server)blockOrigin(o string){s.originsMu.Lock();s.badUntil[o]=time.Now().Add(5*time.Second);s.originsMu.Unlock()}

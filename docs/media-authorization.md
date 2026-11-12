@@ -1,34 +1,22 @@
 # CDN media authorization contract
 
-## No playback signing secret
+The Backend is the only authority for media ownership, visibility, moderation and viewer access. A private object is never public because a signing secret or token is absent.
 
-The CDN does not mint, sign, parse, or validate playback tokens. The `PLAYBACK_SECRET` configuration field and `?token=` URL mechanism are removed. A private media URL is a stable URL, not a bearer capability.
+## Private requests
+1. The client obtains a short-lived assertion from authenticated Backend `POST /api/media/cdn-download-url`.
+2. Backend checks the exact canonical asset row is owned by the viewer, private and ready.
+3. Backend returns a stable CDN URL and a separate `Authorization: Bearer <assertion>` value.
+4. The assertion uses `v1.<base64url-json>.<base64url-hmac-sha256>`, signed with dedicated `CDN_MEDIA_ASSERTION_SECRET`.
+5. Claims are `v=v1`, `iss=testagram-backend`, `aud=testagram-cdn`, `sub` viewer ID, `key` exact canonical object key, `visibility=private`, `iat`, `exp`, and random `jti`.
+6. Worker validates HMAC, issuer, audience, viewer/key binding, private visibility and expiry before reading R2. Private responses are always `private, no-store`.
 
-## Private media request
+Do not send assertions in query strings, referrers or analytics. Legacy `?token=` URLs are rejected. Never reuse Appwrite, storage or origin-service credentials as the assertion secret.
 
-1. The client obtains/holds its Appwrite session.
-2. The client requests the stable CDN media URL with `Authorization: Bearer <Appwrite-session>`.
-3. The CDN requires `ORIGIN_AUTH_TOKEN` and sends two separate headers to the authoritative origin:
-   - `X-Testagram-Origin-Auth: <service credential>` authenticates the CDN service.
-   - `X-Testagram-Viewer-Authorization: Bearer <Appwrite-session>` carries the viewer identity.
-4. The origin validates the service credential, validates the viewer session with Appwrite, and checks the requested object's ACL.
-5. The CDN streams the authorized response directly. It does not cache authenticated requests, use a shield hop, or fall back to Cloudinary/R2. It sends `Cache-Control: private, no-store`.
+## Public media
+Public delivery remains a separate path. A missing assertion is not proof that an object is public. Until a distinct public namespace and authoritative visibility metadata are wired, this Worker serves private objects only and rejects requests without a valid Backend assertion.
 
-The origin must not trust `X-Testagram-Viewer-Authorization` from arbitrary public clients. It must be reachable only through the CDN or independently require the CDN service credential. The origin must never return a private object with a successful response unless the viewer ACL check has passed.
+## Go CDN
+The Go CDN forwards the bearer value to the trusted origin as viewer authorization and bypasses cache for authenticated requests. The origin must validate the same assertion and exact asset row at `/internal/cdn/v1/{key...}`; it must not treat the assertion as an Appwrite session. Origin service authentication remains a separate credential.
 
-## Public media request
-
-Requests without a viewer Authorization header are public candidates only. The authoritative origin must return `X-Testagram-Visibility: public` on a successful response before the CDN caches it. Missing, unknown, or private visibility is rejected. Cloudinary/R2 fallback is limited to paths beginning with `public/`; those configured vendor origins must contain public objects only.
-
-If a public object's visibility is changed to private, purge all CDN/shield copies as part of that state transition. Do not rely on TTL expiry for revocation.
-
-## Deployment
-
-- Remove `PLAYBACK_SECRET` from CDN deployment secrets and environment configuration.
-- Keep `ORIGIN_AUTH_TOKEN`; it is a separate service-to-service credential and is not a playback signing secret.
-- Configure the same origin service credential on the CDN and authoritative origin.
-- Implement origin validation for `X-Testagram-Origin-Auth`, viewer-session validation for `X-Testagram-Viewer-Authorization`, and the explicit public visibility response header.
-- Do not expose the origin publicly in a way that permits bypassing the CDN's service credential.
-- Update Flutter media playback to attach the current Appwrite session to private media requests. HLS players must support authenticated request headers for manifests and every segment/key request.
-
-Until the origin and Flutter client implement this contract, private media playback is intentionally fail-closed. This PR does not claim cross-repository deployment completion.
+## Rollout
+Configure `CDN_MEDIA_ASSERTION_SECRET` in Backend and Worker only after both sides are deployed with the same secret. The v1 assertion is exact-object scoped. Do not reuse one token for a different HLS segment/key. HLS remains blocked until a per-object token or bounded playback-session claim is designed and the client can attach/refresh authorization for every subrequest. Keep legacy Backend direct-storage downloads available during migration. Do not merge production enforcement before the Backend trusted-origin verifier, Go CDN integration, Flutter propagation and physical end-to-end tests pass.

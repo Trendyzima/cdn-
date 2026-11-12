@@ -1,6 +1,7 @@
 package edge
 
 import (
+ "fmt"
  "encoding/json"
   "net/http"
  "net/http/httptest"
@@ -146,19 +147,67 @@ func TestPrivateMediaRequestWithoutViewerIdentityIsRejectedByOrigin(t *testing.T
  if strings.Contains(rr.Header().Get("Cache-Control"),"public"){t.Fatalf("private response publicly cacheable: %q",rr.Header().Get("Cache-Control"))}
 }
 
-func TestViewerAuthorizedMediaBypassesCacheAndForwardsIdentity(t *testing.T) {
+func TestBackendAssertionBypassesCacheAndForwardsIdentity(t *testing.T) {
  seen:=false
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  if r.URL.Path!="/internal/cdn/v1/users/u1/private.webp"{t.Errorf("unexpected trusted origin path: %s",r.URL.Path)}
   if r.Header.Get("X-Testagram-Origin-Auth")!="origin-secret"{t.Errorf("missing service credential")}
-  if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer appwrite-session"{t.Errorf("viewer identity not forwarded")}
+  if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature"{t.Errorf("viewer identity not forwarded")}
   seen=true;w.Header().Set("Content-Type","image/webp");w.Write([]byte("private-bytes"))
  }))
  defer origin.Close()
  cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.OriginAuthToken="origin-secret"
- s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer appwrite-session")
+ s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature")
  s.Handler().ServeHTTP(rr,req)
  if rr.Code!=http.StatusOK||!seen{t.Fatalf("authorized request failed status=%d seen=%v body=%s",rr.Code,seen,rr.Body.String())}
  if rr.Header().Get("Cache-Control")!="private, no-store"||rr.Header().Get("X-Cache")!="BYPASS"{t.Fatalf("private cache policy incorrect: %+v",rr.Header())}
+}
+
+func TestPrivateMediaRangeHeadAndLargeStreaming(t *testing.T) {
+ body:=strings.Repeat("x",2<<20)
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer assertion" { t.Errorf("viewer assertion not forwarded") }
+  if r.Method==http.MethodHead {
+   w.Header().Set("Content-Type","video/mp4")
+   w.Header().Set("Content-Length",fmt.Sprint(len(body)))
+   w.Header().Set("Accept-Ranges","bytes")
+   w.Header().Set("ETag",`"media-v1"`)
+   return
+  }
+  if r.Header.Get("Range")=="bytes=100-199" {
+   if r.Header.Get("If-Range")!=`"media-v1"` { t.Errorf("If-Range not forwarded: %q",r.Header.Get("If-Range")) }
+   w.Header().Set("Content-Type","video/mp4")
+   w.Header().Set("Content-Length","100")
+   w.Header().Set("Content-Range",fmt.Sprintf("bytes 100-199/%d",len(body)))
+   w.Header().Set("Accept-Ranges","bytes")
+   w.WriteHeader(http.StatusPartialContent)
+   _,_=w.Write([]byte(body[100:200]))
+   return
+  }
+  w.Header().Set("Content-Type","video/mp4")
+  w.Header().Set("Content-Length",fmt.Sprint(len(body)))
+  w.Header().Set("Accept-Ranges","bytes")
+  _,_=w.Write([]byte(body))
+ }))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.MaxSegmentBytes=64
+ s:=New(cfg)
+ rangeReq:=httptest.NewRequest(http.MethodGet,"/v1/users/u1/video.mp4",nil)
+ rangeReq.Header.Set("Authorization","Bearer assertion")
+ rangeReq.Header.Set("Range","bytes=100-199")
+ rangeReq.Header.Set("If-Range",`"media-v1"`)
+ rangeRR:=httptest.NewRecorder();s.Handler().ServeHTTP(rangeRR,rangeReq)
+ if rangeRR.Code!=http.StatusPartialContent { t.Fatalf("range status=%d body=%s",rangeRR.Code,rangeRR.Body.String()) }
+ if rangeRR.Header().Get("Content-Range")!=fmt.Sprintf("bytes 100-199/%d",len(body)) || rangeRR.Header().Get("Accept-Ranges")!="bytes" || rangeRR.Header().Get("Cache-Control")!="private, no-store" { t.Fatalf("range headers not preserved: %+v",rangeRR.Header()) }
+ if rangeRR.Body.Len()!=100 { t.Fatalf("range body bytes=%d, want 100",rangeRR.Body.Len()) }
+
+ headReq:=httptest.NewRequest(http.MethodHead,"/v1/users/u1/video.mp4",nil);headReq.Header.Set("Authorization","Bearer assertion")
+ headRR:=httptest.NewRecorder();s.Handler().ServeHTTP(headRR,headReq)
+ if headRR.Code!=http.StatusOK || headRR.Body.Len()!=0 || headRR.Header().Get("Content-Length")!=fmt.Sprint(len(body)) || headRR.Header().Get("Accept-Ranges")!="bytes" { t.Fatalf("HEAD response status=%d bytes=%d headers=%+v",headRR.Code,headRR.Body.Len(),headRR.Header()) }
+
+ fullReq:=httptest.NewRequest(http.MethodGet,"/v1/users/u1/video.mp4",nil);fullReq.Header.Set("Authorization","Bearer assertion")
+ fullRR:=httptest.NewRecorder();s.Handler().ServeHTTP(fullRR,fullReq)
+ if fullRR.Code!=http.StatusOK || fullRR.Body.Len()!=len(body) { t.Fatalf("large private stream status=%d bytes=%d, want %d",fullRR.Code,fullRR.Body.Len(),len(body)) }
 }
 
 func TestPrivateAuthorizationDenialCannotFailOverToAnotherOrigin(t *testing.T) {
@@ -168,7 +217,7 @@ func TestPrivateAuthorizationDenialCannotFailOverToAnotherOrigin(t *testing.T) {
  permissive:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){secondHit=true;w.Write([]byte("must-not-leak"))}))
  defer permissive.Close()
  cfg:=testConfig(t);cfg.OriginURLs=[]string{denied.URL,permissive.URL};cfg.OriginAuthToken="origin-secret"
- s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer appwrite-session")
+ s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature")
  s.Handler().ServeHTTP(rr,req)
  if rr.Code!=http.StatusForbidden||secondHit{t.Fatalf("authorization denial failed open: status=%d secondOriginHit=%v",rr.Code,secondHit)}
 }
