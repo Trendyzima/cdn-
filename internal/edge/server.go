@@ -226,10 +226,9 @@ func(s *Server)fetchCoalesced(key string,ttl,staleFor time.Duration)([]byte,erro
 }
 
 func(s *Server)fetchUpstream(rel string)([]byte,error){
- if isExplicitPublicPath(rel) {
-  if data,ok:=s.fetchCloudinary(rel);ok{return data,nil}
-  if data,ok:=s.fetchR2(rel);ok{return data,nil}
- }
+ // Every cache miss, including a public namespace key, is classified by
+ // the trusted Backend origin. Direct public-provider fallback would bypass
+ // the canonical asset visibility state and is intentionally not used here.
  bases:=append([]string{},s.cfg.ShieldURLs...);bases=append(bases,s.cfg.OriginURLs...)
  if len(bases)>0 && strings.TrimSpace(s.cfg.OriginAuthToken)=="" { return nil,fmt.Errorf("trusted origin authentication is not configured") }
  var lastErr error
@@ -312,6 +311,10 @@ func(s *Server)fetchUpstreamWithViewerAuthorization(ctx context.Context,rel,view
    resp.Body.Close()
    if status<500 { return nil,&originResponseError{status:status} }
    lastErr=fmt.Errorf("origin authorization returned %d",status);continue
+  }
+  if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Testagram-Visibility")),"private") {
+   resp.Body.Close()
+   return nil,&originResponseError{status:http.StatusForbidden}
   }
   if resp.StatusCode!=http.StatusNotModified {
    objectSize:=int64(-1)
