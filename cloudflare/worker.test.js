@@ -92,3 +92,17 @@ test("accepts viewer-bound assertions for another owner's media",async()=>{
   assert.equal(res.status,200);
   assert.equal(await res.text(),"authorized-followed-media");
 });
+
+
+test("readiness fails when the assertion secret is missing or weak",async()=>{
+  const bucket={list:async()=>({objects:[]})};
+  for(const secretValue of [undefined,"weak"]){
+    const e={MEDIA_BUCKET:bucket};
+    if(secretValue!==undefined)e.CDN_MEDIA_ASSERTION_SECRET=secretValue;
+    const ready=await worker.fetch(new Request("https://media.testagram.site/readyz"),e);
+    assert.equal(ready.status,503);
+    const body=await ready.json();
+    assert.equal(body.ok,false);
+    assert.equal(body.error,"assertion_secret_not_configured");
+  }
+});
