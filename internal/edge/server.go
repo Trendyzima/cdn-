@@ -98,24 +98,12 @@ func(s *Server)route(w http.ResponseWriter,r *http.Request){
 }
 
 func(s *Server)mediaURL(w http.ResponseWriter,r *http.Request){
- if r.Method!=http.MethodGet{http.Error(w,"method not allowed",405);return}
- raw:=strings.TrimSpace(r.URL.Query().Get("path"))
- if raw==""{http.Error(w,"path is required",400);return}
- rel,ok:=cleanAssetPath(raw)
- if !ok{http.Error(w,"invalid media path",400);return}
- base:=strings.TrimRight(s.cfg.PublicBaseURL,"/")
- if base==""{
-  scheme:=r.Header.Get("X-Forwarded-Proto"); if scheme=="" { scheme="https" }
-  base=scheme+"://"+r.Host
- }
- mediaURL:=base+strings.TrimRight(s.cfg.MediaURLPrefix,"/")+"/"+rel
- private:=r.URL.Query().Get("private")=="1"
- if _,present:=r.URL.Query()["token"]; present {
-  http.Error(w,"playback tokens are no longer supported; use viewer authorization",http.StatusBadRequest)
-  return
- }
- w.Header().Set("Content-Type","application/json")
- _=json.NewEncoder(w).Encode(map[string]any{"url":mediaURL,"path":rel,"expires_at":nil,"public":!private,"requires_auth":private})
+	// URL issuance based on caller-supplied paths or visibility flags is not
+	// an authorization decision. Backend now attaches a short-lived,
+	// viewer-bound assertion to the actual media request instead.
+	w.Header().Set("Cache-Control","no-store")
+	w.Header().Set("X-Content-Type-Options","nosniff")
+	http.Error(w,"media URL issuance is disabled; use a Backend-authorized media URL",http.StatusGone)
 }
 
 func(s *Server)mediaAlias(w http.ResponseWriter,r *http.Request){
