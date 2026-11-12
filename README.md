@@ -122,7 +122,7 @@ P2P remains an acceleration layer, never the source of truth. HTTP CDN delivery 
 | UPSTASH_REDIS_REST_URL | empty | optional Upstash Redis REST endpoint for control-plane coordination |
 | UPSTASH_REDIS_REST_TOKEN | empty | server-only Upstash Redis token |
 | UPSTASH_LOCK_TTL | 8s | distributed coordination lease |
-| TRUST_CLOUDFLARE | 0 | use CF-Connecting-IP for rate limiting when behind Cloudflare |
+| TRUST_CLOUDFLARE | 0 | trust CF-Connecting-IP only when the origin is network-restricted to Cloudflare or a trusted tunnel; never enable on a directly reachable origin |
 
 ## Testagram provider compatibility
 
@@ -135,7 +135,7 @@ Cloudflare provides authoritative DNS and private R2 object storage. The
 Cloudflare R2 Worker under `cloudflare/` is currently deployed only as an
 unrouted script (`workers_dev = false`); it has no custom-domain route and
 must not intercept `media.testagram.site`. A separate hostname and reviewed
-Backend/API contract are required before Worker activation.
+Backend/API contract are required before Worker activation. The Go edge container is published under its immutable source SHA and has a build-provenance attestation; deployments must pin the published image digest, never a mutable `latest` tag. Data Centre issue #53 tracks the canonical deployment controller and promotion/rollback workflow.
 
 Backend is the authority for identity, media ownership, visibility and
 viewer authorization. Appwrite is used for identity/session verification;
