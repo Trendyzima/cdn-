@@ -64,7 +64,7 @@ test("path traversal never reaches R2",async()=>{
   assert.equal(res.status,404);assert.equal(reads,0);
 });
 test("health and readiness expose Worker identity",async()=>{
-  const e={MEDIA_BUCKET:{list:async()=>({objects:[]})}};
+  const e={CDN_MEDIA_ASSERTION_SECRET:secret,MEDIA_BUCKET:{list:async()=>({objects:[]})}};
   const health=await worker.fetch(new Request("https://media.testagram.site/healthz"),e);
   const ready=await worker.fetch(new Request("https://media.testagram.site/readyz"),e);
   assert.equal(health.status,200);assert.equal(ready.status,200);
