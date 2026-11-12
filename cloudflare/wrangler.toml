@@ -13,6 +13,15 @@ enabled = true
 
 # Only route Backend-asserted private user media through this Worker.
 # Do not capture public media paths until their delivery contract is implemented.
+# Public, non-sensitive Worker health endpoints used by the post-deploy smoke gate.
+[[routes]]
+pattern = "media.testagram.site/healthz"
+zone_name = "testagram.site"
+
+[[routes]]
+pattern = "media.testagram.site/readyz"
+zone_name = "testagram.site"
+
 [[routes]]
 pattern = "media.testagram.site/v1/users/*"
 zone_name = "testagram.site"
