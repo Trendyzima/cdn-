@@ -177,23 +177,21 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
   return
  }
  if e,data,err:=s.cache.GetHot(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HOT");w.Header().Set("Cache-Status","testagram; hit; tier=hot");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.serveBytes(w,r,data);return};if e,err:=s.cache.Get(rel);err==nil{s.hits.Add(1);setType(w,rel);w.Header().Set("X-Cache","HIT");w.Header().Set("Cache-Status","testagram; hit");w.Header().Set("ETag",etagFile(e));w.Header().Set("Cache-Control",cacheControl(rel));w.Header().Set("Age",age(e)); if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }; s.serveEntry(w,r,e);return}
- stale,staleErr:=s.cache.GetStale(rel);s.misses.Add(1)
+ s.misses.Add(1)
  ttl:=s.cfg.SegmentTTL;if strings.HasSuffix(strings.ToLower(rel),".m3u8"){ttl=s.cfg.ManifestTTL}
- data,err:=s.fetchCoalesced(rel,ttl,s.cfg.StaleIfError)
+ // User media visibility, moderation and deletion are mutable. Do not serve
+ // stale bytes on an origin outage: the CDN cannot know whether Backend has
+ // revoked public visibility while unavailable.
+ data,err:=s.fetchCoalesced(rel,ttl,0)
  if err!=nil {
   var responseErr *originResponseError
   if errors.As(err,&responseErr) && responseErr.status < 500 {
-   // Authorization, visibility and deletion responses are authoritative;
-   // never serve a stale public object after a non-transient origin denial.
    s.cache.Delete(rel)
    status:=responseErr.status
    if status==http.StatusGone { status=http.StatusNotFound }
    if status!=http.StatusUnauthorized && status!=http.StatusForbidden && status!=http.StatusNotFound && status!=http.StatusRequestEntityTooLarge && status!=http.StatusRequestedRangeNotSatisfiable { status=http.StatusBadGateway }
    http.Error(w,"upstream rejected media request",status)
    return
-  }
-  if staleErr==nil {
-   s.staleHits.Add(1);setType(w,rel);w.Header().Set("X-Cache","STALE");w.Header().Set("Cache-Status","testagram; stale-if-error");w.Header().Set("Warning","110 - Response is stale");w.Header().Set("Age",age(stale));w.Header().Set("Cache-Control",cacheControl(rel));s.serveEntry(w,r,stale);return
   }
   http.Error(w,"upstream unavailable",502);return
  }
@@ -407,15 +405,17 @@ func setType(w http.ResponseWriter,rel string){
 func isLiveMedia(rel string) bool { l:=strings.ToLower(rel); return strings.HasSuffix(l,".m3u8")||strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s") }
 func cacheControl(rel string)string{
  l:=strings.ToLower(rel)
- if strings.HasSuffix(l,".m3u8"){return "public, max-age=0, s-maxage=1, stale-while-revalidate=2, stale-if-error=10"}
- if strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s"){return "public, max-age=60, s-maxage=120, stale-while-revalidate=60, stale-if-error=300"}
+ // Browser caches must revalidate mutable media. Shared edge caches retain
+ // only bounded copies and never serve stale bytes after origin failure.
+ if strings.HasSuffix(l,".m3u8"){return "public, max-age=0, must-revalidate, s-maxage=2"}
+ if strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s"){return "public, max-age=0, must-revalidate, s-maxage=120"}
  if strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif"){
-  return "public, max-age=31536000, s-maxage=31536000, immutable, stale-if-error=86400"
+  return "public, max-age=0, must-revalidate, s-maxage=300"
  }
  if strings.HasSuffix(l,".mp4")||strings.HasSuffix(l,".webm")||strings.HasSuffix(l,".mov")||strings.HasSuffix(l,".mp3")||strings.HasSuffix(l,".aac")||strings.HasSuffix(l,".wav"){
-  return "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400, stale-if-error=86400"
+  return "public, max-age=0, must-revalidate, s-maxage=300"
  }
- return "public, max-age=15, s-maxage=20, stale-while-revalidate=30, stale-if-error=30"
+ return "public, max-age=0, must-revalidate, s-maxage=30"
 }
 func etagFile(e cache.Entry)string{return "\""+fmt.Sprintf("%x-%x",e.Size,e.CreatedAt.UnixNano())+"\""}
 func hash(b []byte)string{h:=sha256.Sum256(b);return hex.EncodeToString(h[:])[:16]}
