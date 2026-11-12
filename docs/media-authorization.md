@@ -7,7 +7,7 @@ The Backend is the only authority for media ownership, visibility, moderation an
 2. Backend checks the exact canonical asset row is owned by the viewer, private and ready.
 3. Backend returns a stable CDN URL and a separate `Authorization: Bearer <assertion>` value.
 4. The assertion uses `v1.<base64url-json>.<base64url-hmac-sha256>`, signed with dedicated `CDN_MEDIA_ASSERTION_SECRET`.
-5. Claims are `v=v1`, `iss=testagram-backend`, `aud=testagram-cdn`, `sub` viewer ID, `key` exact canonical object key, `visibility=private`, `iat`, `exp`, and random `jti`.
+5. Claims are `v=v1`, `iss=testagram-backend`, `aud=testagram-cdn`, `sub` viewer ID (including valid Appwrite `_` and `.` characters), `key` exact canonical object key, `visibility=private`, `iat`, `exp`, and random `jti`.
 6. Worker validates HMAC, issuer, audience, viewer/key binding, private visibility and expiry before reading R2. Private responses are always `private, no-store`.
 
 Do not send assertions in query strings, referrers or analytics. Legacy `?token=` URLs are rejected. Never reuse Appwrite, storage or origin-service credentials as the assertion secret.
