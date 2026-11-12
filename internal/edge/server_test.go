@@ -154,7 +154,7 @@ func TestBackendAssertionBypassesCacheAndForwardsIdentity(t *testing.T) {
   if r.URL.Path!="/internal/cdn/v1/users/u1/private.webp"{t.Errorf("unexpected trusted origin path: %s",r.URL.Path)}
   if r.Header.Get("X-Testagram-Origin-Auth")!="origin-secret"{t.Errorf("missing service credential")}
   if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature"{t.Errorf("viewer identity not forwarded")}
-  seen=true;w.Header().Set("Content-Type","image/webp");w.Write([]byte("private-bytes"))
+  seen=true;w.Header().Set("X-Testagram-Visibility","private");w.Header().Set("Content-Type","image/webp");w.Write([]byte("private-bytes"))
  }))
  defer origin.Close()
  cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.OriginAuthToken="origin-secret"
@@ -167,6 +167,7 @@ func TestBackendAssertionBypassesCacheAndForwardsIdentity(t *testing.T) {
 func TestPrivateMediaRangeHeadAndLargeStreaming(t *testing.T) {
  body:=strings.Repeat("x",2<<20)
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  w.Header().Set("X-Testagram-Visibility","private")
   if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer assertion" { t.Errorf("viewer assertion not forwarded") }
   if r.Method==http.MethodHead {
    w.Header().Set("Content-Type","video/mp4")
@@ -416,4 +417,44 @@ func TestReadyRequiresPrivateOriginEvenWhenShieldExists(t *testing.T) {
  s:=New(cfg);rr:=httptest.NewRecorder()
  s.ready(rr,httptest.NewRequest(http.MethodGet,"/readyz",nil))
  if rr.Code!=http.StatusServiceUnavailable { t.Fatalf("ready accepted shield-only config for private media: %d",rr.Code) }
+}
+
+func TestPublicDeliveryAlwaysConsultsBackendVisibility(t *testing.T) {
+ var providerHits atomic.Int32
+ provider:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  providerHits.Add(1)
+  _,_=w.Write([]byte("provider-bypass"))
+ }))
+ defer provider.Close()
+ backend:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  if r.URL.Path!="/internal/cdn/v1/public/logo.webp" { t.Errorf("unexpected Backend origin path: %s",r.URL.Path) }
+  w.Header().Set("X-Testagram-Visibility","public")
+  _,_=w.Write([]byte("backend-authoritative"))
+ }))
+ defer backend.Close()
+ cfg:=testConfig(t)
+ cfg.OriginURLs=[]string{backend.URL}
+ cfg.CloudinaryImageBaseURL=provider.URL
+ cfg.R2PublicBaseURL=provider.URL
+ s:=New(cfg)
+ rr:=httptest.NewRecorder()
+ s.Handler().ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/public/logo.webp",nil))
+ if rr.Code!=http.StatusOK || rr.Body.String()!="backend-authoritative" { t.Fatalf("public object did not come from Backend-classified origin: status=%d body=%q",rr.Code,rr.Body.String()) }
+ if providerHits.Load()!=0 { t.Fatalf("direct public provider fallback bypassed Backend visibility: hits=%d",providerHits.Load()) }
+}
+
+func TestPrivateOriginMustExplicitlyClassifyResponse(t *testing.T) {
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  // A successful response without the Backend private classification is not
+  // accepted, even when the viewer assertion and origin credentials exist.
+  _,_=w.Write([]byte("unclassified-private-bytes"))
+ }))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL}
+ s:=New(cfg);rr:=httptest.NewRecorder()
+ req:=httptest.NewRequest(http.MethodGet,"/v1/users/u1/private.webp",nil)
+ req.Header.Set("Authorization","Bearer viewer-assertion")
+ s.Handler().ServeHTTP(rr,req)
+ if rr.Code!=http.StatusForbidden { t.Fatalf("unclassified private origin response status=%d",rr.Code) }
+ if strings.Contains(rr.Body.String(),"unclassified-private-bytes") { t.Fatal("unclassified bytes were delivered") }
 }
