@@ -1,22 +1,82 @@
 # CDN media authorization contract
 
-The Backend is the only authority for media ownership, visibility, moderation and viewer access. A private object is never public because a signing secret or token is absent.
+## Authority and active delivery path
 
-## Private requests
-1. The client obtains a short-lived assertion from authenticated Backend `POST /api/media/cdn-download-url`.
-2. Backend checks the exact canonical asset row, its owner, private/ready state and the viewer's post/media visibility. Owner-only downloads use the same ID for viewer and owner; feed grants can separate them after the feed visibility check.
-3. Backend returns a stable CDN URL and a separate `Authorization: Bearer <assertion>` value.
-4. The assertion uses `v1.<base64url-json>.<base64url-hmac-sha256>`, signed with dedicated `CDN_MEDIA_ASSERTION_SECRET`.
-5. Claims are `v=v1`, `iss=testagram-backend`, `aud=testagram-cdn`, `sub` authorized viewer ID, `owner` canonical media owner ID, `key` exact canonical object key, `visibility=private`, `iat`, `exp`, and random `jti`. Legacy owner-only assertions may omit `owner`; the Worker then treats `sub` as owner.
-6. Worker validates HMAC, issuer, audience, owner/key binding, private visibility and expiry before reading R2. The signed subject records the viewer authorization decision; the bearer token must remain private. Private responses are always `private, no-store`.
+Backend is the sole authority for identity, media ownership, visibility,
+moderation and viewer access. Data Centre owns durable storage operations.
+The Go CDN is a byte-delivery service and never decides whether a viewer may
+see a post or attachment.
 
-Do not send assertions in query strings, referrers or analytics. Legacy `?token=` URLs are rejected. Never reuse Appwrite, storage or origin-service credentials as the assertion secret.
+For private media:
+
+1. Flutter obtains a short-lived, object/viewer-bound assertion from the
+   authenticated Backend media-download endpoint.
+2. Backend checks the canonical asset record, owner, ready/deletion state,
+   moderation and the viewer's current post/media visibility.
+3. Flutter sends the assertion as `Authorization: Bearer <assertion>` to the
+   canonical Go CDN URL.
+4. The Go CDN does not cache private bytes. It forwards the assertion in
+   `X-Testagram-Viewer-Authorization` and its separate service credential in
+   `X-Testagram-Origin-Auth` to the trusted Backend origin route
+   `/internal/cdn/v1/{key...}`.
+5. The Backend origin validates the service credential, assertion signature,
+   issuer/audience, exact object key, viewer, owner and expiry, then resolves
+   the canonical object and streams it. A CDN request without a valid viewer
+   assertion cannot be upgraded to public access.
+
+The Go CDN preserves origin authorization denials and streams private responses
+with `Cache-Control: private, no-store`, `CDN-Cache-Control: no-store` and
+cache bypass. It does not put private content in its hot/disk cache.
+
+## Assertion format
+
+The Backend assertion contract is
+`v1.<base64url-json>.<base64url-hmac-sha256>`, signed with the dedicated
+`CDN_MEDIA_ASSERTION_SECRET`. Claims include:
+- `v=v1`, `iss=testagram-backend`, `aud=testagram-cdn`;
+- `sub` as the authorized viewer ID;
+- `owner` as the canonical media owner ID (legacy owner-only assertions may
+  omit it, in which case the subject must equal the owner);
+- `key` as the exact canonical object key and `visibility=private`;
+- `iat`, `exp` and a random `jti`.
+
+The Go CDN relays this assertion to the trusted Backend origin; the origin is
+the cryptographic verifier and authorization decision point. Never confuse the
+viewer assertion with the separate Go CDN service credential
+(`ORIGIN_AUTH_TOKEN` / Backend `CDN_ORIGIN_AUTH_TOKEN`).
+
+Do not send assertions in query strings, referrers, analytics or logs. Legacy
+`?token=` media URLs are rejected. Never reuse Appwrite, storage-provider or
+origin-service credentials as the assertion signing secret.
 
 ## Public media
-Public delivery remains a separate path. A missing assertion is not proof that an object is public. Until a distinct public namespace and authoritative visibility metadata are wired, this Worker serves private objects only and rejects requests without a valid Backend assertion.
 
-## Go CDN
-The Go CDN forwards the bearer value to the trusted origin as viewer authorization and bypasses cache for authenticated requests. The origin must validate the same assertion and exact asset row at `/internal/cdn/v1/{key...}`; it must not treat the assertion as an Appwrite session. Origin service authentication remains a separate credential.
+Unauthenticated requests may use the shared-cache path only when Backend
+checks the canonical asset row and explicitly returns
+`X-Testagram-Visibility: public` for a ready public object. Testagram object
+keys commonly use `users/<owner>/<id>` for both public and private media; the
+path prefix is not a visibility signal. Missing or non-public classification
+must fail closed.
 
-## Rollout
-Configure `CDN_MEDIA_ASSERTION_SECRET` in Backend and Worker only after both sides are deployed with the same secret. The v1 assertion is exact-object scoped. Do not reuse one token for a different HLS segment/key. The `owner` claim is independent of `sub`, allowing a follower who passed Backend visibility checks to view another owner's private attachment without changing the key-owner binding. HLS remains blocked until a per-object token or bounded playback-session claim is designed and the client can attach/refresh authorization for every subrequest. Keep legacy Backend direct-storage downloads available during migration. Do not merge production enforcement before the Backend trusted-origin verifier, Go CDN integration, Flutter propagation and physical end-to-end tests pass.
+**Integration blocker:** current Backend `/internal/cdn/v1/{key...}` is
+private-only and requires a viewer assertion for every object. Backend issue
+#205 tracks the missing service-authenticated public-origin branch. Until it is
+merged and tested, public cache misses fail closed and direct Cloudinary/R2
+provider fallback is disabled.
+
+## Cloudflare R2 Worker boundary
+
+The optional Worker source verifies the same Backend assertion before reading
+its R2 binding, but it is currently deployed without a custom-domain route.
+It is not in the active `media.testagram.site` request path. Do not add a route
+to that hostname: the Go CDN owns it. Worker activation requires a distinct
+approved hostname and a reviewed API/Backend contract.
+
+## TV/HLS
+
+The legacy CDN-side `PLAYBACK_SECRET` proxy is not an approved product
+authorization path. The public `/v1/tv/*` route is disabled until Backend
+catalogue/playback-grant handlers, Data Centre catalogue ingestion, CDN
+verification semantics and Flutter manifest/segment/range/expiry tests are
+implemented together. The CDN must not mint TV authorization from an arbitrary
+`src` URL or caller-controlled channel identifier.

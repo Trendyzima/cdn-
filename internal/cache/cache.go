@@ -54,7 +54,16 @@ func(c *Cache)Delete(key string)bool{c.mu.Lock();defer c.mu.Unlock();el,ok:=c.it
 func(c *Cache)Clear(){c.mu.Lock();defer c.mu.Unlock();for c.lru.Len()>0{c.removeLocked(c.lru.Back())};for c.hotLRU.Len()>0{c.hotRemoveLocked(c.hotLRU.Back())}}
 func(c *Cache)Stats()(int,int64,int64){c.mu.Lock();defer c.mu.Unlock();return len(c.items),c.bytes,c.maxBytes}
 func(c *Cache)detachLocked(el *list.Element){if el==nil{return};e:=el.Value.(item).e;delete(c.items,e.Key);c.bytes-=e.Size;if c.bytes<0{c.bytes=0};if h,ok:=c.hot[e.Key];ok{c.hotRemoveLocked(h)};c.lru.Remove(el)}
-func(c *Cache)removeLocked(el *list.Element){if el==nil{return};e:=el.Value.(item).e;_ = os.Remove(e.Path);delete(c.items,e.Key);c.bytes-=e.Size;if c.bytes<0{c.bytes=0};c.lru.Remove(el)}
+func(c *Cache)removeLocked(el *list.Element){
+ if el==nil{return}
+ e:=el.Value.(item).e
+ if hot,ok:=c.hot[e.Key];ok{c.hotRemoveLocked(hot)}
+ _=os.Remove(e.Path)
+ delete(c.items,e.Key)
+ c.bytes-=e.Size
+ if c.bytes<0{c.bytes=0}
+ c.lru.Remove(el)
+}
 type hotItem struct{e Entry;data []byte}
 func(c *Cache)hotPutLocked(e Entry,data []byte){if old,ok:=c.hot[e.Key];ok{c.hotBytes-=old.Value.(hotItem).e.Size;c.hotLRU.Remove(old);delete(c.hot,e.Key)};h:=c.hotLRU.PushFront(hotItem{e:e,data:data});c.hot[e.Key]=h;c.hotBytes+=e.Size;for c.hotBytes>c.hotMaxBytes{back:=c.hotLRU.Back();if back==nil{break};c.hotRemoveLocked(back)}}
 func(c *Cache)hotRemoveLocked(el *list.Element){if el==nil{return};h:=el.Value.(hotItem);delete(c.hot,h.e.Key);c.hotBytes-=h.e.Size;if c.hotBytes<0{c.hotBytes=0};c.hotLRU.Remove(el)}

@@ -1,4 +1,4 @@
-name: Production Media Smoke
+name: Production CDN Integration Smoke
 
 on:
   workflow_dispatch:
@@ -11,42 +11,39 @@ permissions:
   contents: read
 
 jobs:
-  ownership:
+  canonical-cdn:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Verify deployed R2 Worker identity
+      - name: Verify canonical Go CDN identity
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --max-time 15 \
             -D /tmp/health.headers -o /tmp/health.json \
             https://media.testagram.site/healthz
-          cat /tmp/health.headers
-          cat /tmp/health.json
-          grep -Eiq '^x-testagram-cdn:[[:space:]]*r2-edge[[:space:]]*$' /tmp/health.headers
-          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-12-r2-backend-assertion-v1[[:space:]]*$' /tmp/health.headers
-          grep -q '"version":"2026-11-12-r2-backend-assertion-v1"' /tmp/health.json
+          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/health.headers
+          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-10-08-go-edge-iptv-v1[[:space:]]*$' /tmp/health.headers
+          grep -q '"ok":true' /tmp/health.json
+          grep -q '"service":"testagram-cdn"' /tmp/health.json
 
-      - name: Verify Worker readiness and R2 binding
+      - name: Verify Go CDN readiness and trusted origin configuration
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --max-time 15 \
-            -D /tmp/ready.headers -o /tmp/ready.json \
+            -D /tmp/ready.headers -o /tmp/ready.body \
             https://media.testagram.site/readyz
-          cat /tmp/ready.headers
-          cat /tmp/ready.json
-          grep -Eiq '^x-testagram-cdn:[[:space:]]*r2-edge[[:space:]]*$' /tmp/ready.headers
-          grep -q '"ok":true' /tmp/ready.json
+          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/ready.headers
+          grep -qx 'ready' /tmp/ready.body
 
-      - name: Verify private user media fails closed without viewer assertion
+      - name: Verify private media authorization is delegated and denied safely
         shell: bash
         run: |
           set -euo pipefail
-          status="$(curl --silent --show-error --max-time 15 \
-            -o /tmp/private-denied.json -w '%{http_code}' \
-            https://media.testagram.site/v1/users/smoke/0123456789abcdef0123456789abcdef)"
-          cat /tmp/private-denied.json
+          status="$(curl --silent --show-error --max-time 20 \
+            -o /tmp/private-denied.body -w '%{http_code}' \
+            https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef)"
           test "$status" = "401"
+          grep -Eiq 'viewer assertion|required|unauthorized|not authorized|invalid' /tmp/private-denied.body
