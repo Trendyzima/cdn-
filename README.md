@@ -16,21 +16,37 @@ The CDN uses a two-tier local cache: a larger disk-backed cache for breadth and 
 | UPSTASH_LOCK_TTL | 8s | distributed coordination lease |
 | TRUST_CLOUDFLARE | 0 | use CF-Connecting-IP for rate limiting when behind Cloudflare |\n\n## Testagram provider compatibility
 
-This service is the first-party Testagram CDN and media delivery plane. Cloudflare is not the media CDN. `media.testagram.site` is reserved for the Go CDN data plane; any Cloudflare deployment must not attach a media route to that hostname. Cloudflare may be used for DNS-only or separate web/control/security duties. Set TRUST_CLOUDFLARE=1 only when the service is reachable exclusively through trusted Cloudflare proxying, so CF-Connecting-IP can be used for per-viewer rate limiting.
+This repository is the canonical Go media-delivery plane for Testagram.
+`media.testagram.site` routes to the Go CDN, which handles public aliases,
+private viewer-authorized streaming, HLS/DASH byte delivery, range requests,
+cache, shields and configured trusted origins.
 
-Cloudinary can be the media origin for image/video assets. Configure CLOUDINARY_CLOUD_NAME for conventional Cloudinary delivery URLs, or provide explicit CLOUDINARY_IMAGE_BASE_URL / CLOUDINARY_VIDEO_BASE_URL when Testagram uses custom delivery/transformation paths. The CDN caches the returned bytes; Cloudinary remains responsible for its asset/transformation layer.
+Cloudflare provides authoritative DNS and private R2 object storage. The
+Cloudflare R2 Worker under `cloudflare/` is currently deployed only as an
+unrouted script (`workers_dev = false`); it has no custom-domain route and
+must not intercept `media.testagram.site`. A separate hostname and reviewed
+Backend/API contract are required before Worker activation.
 
-Upstash Redis is intentionally optional and is treated as a control-plane service, not a binary media store. The CDN disk/RAM tiers remain authoritative for media bytes. This prevents large videos and HLS segments from being serialized through Redis.
+Backend is the authority for identity, media ownership, visibility and
+viewer authorization. Appwrite is used for identity/session verification;
+there is no Supabase runtime identity dependency. Data Centre owns storage
+placement, replication, repair and deletion. The CDN is not a product API or
+authorization authority.
 
-Recommended production flow:
+Cloudinary and explicitly public R2 delivery origins may be used only for
+objects under the canonical `public/` namespace. Private MinIO/R2/B2 objects
+must be reached through the authenticated Backend origin gateway; the current
+Go service is not an S3 Signature V4 client. Upstash Redis is optional
+control-plane coordination only, never a binary media store.
 
-Viewer -> Testagram Edge CDN -> local hot/disk cache -> shield -> R2/Cloudinary/authenticated origin
+Recommended active flow:
 
-Application metadata/auth -> Testagram backend/Supabase
+Viewer -> Go Testagram CDN -> public cache or authenticated Backend origin
+Backend -> Data Centre -> private object providers (Instabox/MinIO, R2, B2)
 
-Control-plane coordination -> Upstash Redis
-
-This separation keeps Cloudflare at the public security boundary, Cloudinary at the asset/transformation layer, Redis in fast control-plane state, and this CDN responsible for absorbing repeated media delivery.
+The Go CDN's private path forwards a Backend-issued viewer assertion and a
+separate CDN-to-origin service credential. Private responses bypass cache and
+are always `private, no-store`.
 
 ## XClone / Testagram media compatibility
 
