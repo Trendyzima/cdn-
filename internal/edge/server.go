@@ -285,10 +285,6 @@ func(s *Server)fetchCloudinary(rel string)([]byte,bool){
 func(s *Server)purge(w http.ResponseWriter,r *http.Request){if r.Method!=http.MethodPost&&r.Method!=http.MethodDelete{http.Error(w,"method not allowed",405);return};if s.cfg.PurgeToken==""||!hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte("Bearer "+s.cfg.PurgeToken)){http.Error(w,"unauthorized",401);return};key:=strings.TrimSpace(r.URL.Query().Get("path"));if key==""{s.cache.Clear();w.WriteHeader(204);return};rel,ok:=cleanAssetPath("/v1/"+key);if !ok{http.Error(w,"invalid path",400);return};if !s.cache.Delete(rel){w.WriteHeader(404);return};w.WriteHeader(204)}
 
 
-func isExplicitPublicPath(rel string) bool {
- return strings.SplitN(strings.TrimPrefix(rel,"/"),"/",2)[0]=="public"
-}
-
 const maxPrivateMediaObjectBytes int64 = 1 << 30
 
 func(s *Server)fetchUpstreamWithViewerAuthorization(ctx context.Context,rel,viewerAuthorization,method,rangeHeader,ifRange string)(*http.Response,error){
