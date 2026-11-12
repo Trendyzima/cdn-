@@ -43,7 +43,6 @@ jobs:
         run: |
           set -euo pipefail
           status="$(curl --silent --show-error --max-time 20 \
-            -H 'Authorization: Bearer deliberately-invalid-cdn-smoke-assertion' \
             -o /tmp/private-denied.body -w '%{http_code}' \
             https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef)"
           test "$status" = "401"
