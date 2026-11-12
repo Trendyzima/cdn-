@@ -31,7 +31,7 @@ Token format is `<unix-expiry>.<hex-hmac-sha256>`. HMAC input is the exact norma
 The Backend must:
 1. authorize the current viewer against canonical media ownership and post visibility;
 2. sign only the exact normalized object key;
-3. use a short expiry (10 minutes in the current Backend signer);
+3. use a short expiry (2 minutes by default, with a hard maximum of 5 minutes in the Backend signer);
 4. never accept a caller-provided bucket, endpoint, host or object key without canonical record lookup;
 5. return no signed URL when authorization or signing configuration is unavailable.
 
