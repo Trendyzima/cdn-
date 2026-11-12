@@ -50,15 +50,34 @@ are always `private, no-store`.
 
 ## XClone / Testagram media compatibility
 
-The edge exposes a stable media contract so application rows can store CDN URLs instead of origin URLs.
+The Go CDN exposes the canonical media delivery contract. Backend owns the
+stable URL and object key; the CDN does not mint media URLs from caller-supplied
+paths or visibility flags. The legacy `GET /v1/media/url` helper intentionally
+returns HTTP 410.
 
-Supported public aliases include `/media/*`, `/users/*`, `/profiles/*`, `/uploads/*`, `/avatars/*`, `/covers/*`, `/photos/*`, and `/videos/*`.
+Supported compatibility aliases include `/media/*`, `/users/*`,
+`/profiles/*`, `/uploads/*`, `/avatars/*`, `/covers/*`, `/photos/*`,
+and `/videos/*`. The canonical API path is `/v1/<object-key>`.
 
-All aliases converge on the same cache/data plane and support GET/HEAD, byte ranges, ETags, immutable image caching, long-lived video caching, and HLS segment delivery.
+Public shared-cache delivery is restricted to the explicit `public/`
+namespace and requires the trusted origin to return
+`X-Testagram-Visibility: public`. Unclassified, private or denied origin
+responses are never cached or served stale. A 401/403/404 origin response
+invalidates a stale public cache entry.
 
-For application code, `GET /v1/media/url?path=<media-path>` returns a canonical JSON media URL. Set `PUBLIC_BASE_URL=https://media.testagram.site` in production. Set `MEDIA_URL_PREFIX=/media` to keep durable URLs such as `https://media.testagram.site/media/users/<id>/avatar.webp`.
+Private media requests carry a Backend-issued assertion in
+`Authorization: Bearer <assertion>`. The Go CDN forwards it to the trusted
+Backend origin as `X-Testagram-Viewer-Authorization` together with the
+separate service credential `X-Testagram-Origin-Auth`. Private bytes bypass
+hot/disk caches and are returned with `Cache-Control: private, no-store`.
+The Backend origin validates the viewer assertion and canonical asset record.
 
-Keep binary storage at the authenticated origin/object store; this service is the delivery/cache layer. This avoids coupling database records to a vendor-specific storage URL. Private media uses the origin-authoritative Appwrite viewer authorization contract; see [docs/media-authorization.md](docs/media-authorization.md).
+The Go CDN supports GET/HEAD, single byte ranges, ETags, content types and
+HLS/DASH byte streaming. The legacy CDN-side `/v1/tv/*` proxy is deliberately
+disabled (HTTP 503) until the Backend TV catalogue/playback-grant contract,
+Data Centre ingestion and Flutter manifest/segment integration are complete.
+The CDN must not mint playback grants or proxy arbitrary caller-provided
+`src` URLs.
 
 ## Capacity verification\n\nNormal CI runs the full correctness suite, race detector and vet. The one-million logical-viewer cache-fanout test is run in CI, but it is an in-process correctness stress test, not proof of one million real Internet viewers:\n\nCAPACITY_TEST=1 go test ./internal/edge -run TestCapacity1MLogicalViewers -count=1 -timeout 10m\n\nIt verifies that 100,000 concurrent logical viewers can request the same uncached segment through the in-process data plane while the origin sees only one fetch. This is a fan-out correctness test, not proof of 100,000 real Internet viewers.\n\nFor real capacity certification, run staged external tests against deployed nodes:\n\n- 1,000 viewers\n- 5,000 viewers\n- 10,000 viewers\n- 25,000 viewers\n- 50,000 viewers\n- 100,000 viewers\n\nEach stage must record p50/p95/p99 latency, HTTP error rate, rebuffer/stall rate, edge egress, origin egress, origin request rate, cache hit ratio, CPU, memory, open connections and network saturation. Do not promote a stage if any SLO regresses.\n\n## Cost boundary\n\nThe software can remain open-source and free. Public bandwidth, compute, IP transit and always-on machines are physical resources and cannot honestly be promised as unlimited/free forever.\n\nGitHub documents that standard GitHub-hosted runners are free for public repositories, but they are temporary CI machines rather than persistent video-serving nodes. GitHub also imposes workflow/job limits, so CI must remain build/test automation rather than the CDN transport layer.\n\nThe real target is:\n\n- no mandatory CDN vendor fee\n- no per-video-request edge-function dependency\n- aggressive cache reuse\n- shielded origins\n- optional P2P offload\n- independently deployable edge nodes\n\n## Production rule\n\nDo not expose the origin directly to public viewers once the CDN is integrated.\n\nPublic path:\n\nviewer -> edge -> cache -> shield -> authenticated origin\n\nNever:\n\nviewer -> origin
 
@@ -81,4 +100,4 @@ The default production profile is deliberately light enough for small edge nodes
 HLS requires segments referenced by a live playlist to remain available long enough to avoid interrupting playback, and clients are expected to load segments ahead of their presentation time. The CDN therefore treats the playlist as control-plane metadata and segments as durable short-lived data-plane objects.
 
 
-**Security note:** `PLAYBACK_SECRET` and signed playback query tokens have been removed. Private media uses Appwrite viewer authorization forwarded to the trusted origin. See [docs/media-authorization.md](docs/media-authorization.md) for required origin and client behavior.
+**Security note:** legacy CDN-issued TV playback tokens are not an approved product authorization path; the `/v1/tv/*` route is disabled. Private media uses Backend-issued viewer assertions relayed to the trusted origin. See [docs/media-authorization.md](docs/media-authorization.md).
