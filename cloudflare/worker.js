@@ -30,7 +30,13 @@ async function authorizedPrivate(key, authorization, secret) {
   let signature, payload;
   try {
     const decode = value => {
+      if (typeof value !== "string" || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid base64url");
       const raw = atob(value.replace(/-/g,"+").replace(/_/g,"/") + "=".repeat((4-value.length%4)%4));
+      const canonical = btoa(raw).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,"");
+      // Reject alternate encodings of the same bytes (including non-zero
+      // unused pad bits) so a byte-for-byte token mutation cannot alias the
+      // original signed assertion.
+      if (canonical !== value) throw new Error("non-canonical base64url");
       return Uint8Array.from(raw, ch => ch.charCodeAt(0));
     };
     signature = decode(parts[2]);
