@@ -146,11 +146,11 @@ func TestPrivateMediaRequestWithoutViewerIdentityIsRejectedByOrigin(t *testing.T
  if strings.Contains(rr.Header().Get("Cache-Control"),"public"){t.Fatalf("private response publicly cacheable: %q",rr.Header().Get("Cache-Control"))}
 }
 
-func TestViewerAuthorizedMediaBypassesCacheAndForwardsIdentity(t *testing.T) {
+func TestBackendAssertionBypassesCacheAndForwardsIdentity(t *testing.T) {
  seen:=false
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   if r.Header.Get("X-Testagram-Origin-Auth")!="origin-secret"{t.Errorf("missing service credential")}
-  if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer appwrite-session"{t.Errorf("viewer identity not forwarded")}
+  if r.Header.Get("X-Testagram-Viewer-Authorization")!="Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature"{t.Errorf("viewer identity not forwarded")}
   seen=true;w.Header().Set("Content-Type","image/webp");w.Write([]byte("private-bytes"))
  }))
  defer origin.Close()
