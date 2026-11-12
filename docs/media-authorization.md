@@ -16,7 +16,7 @@ Do not send assertions in query strings, referrers or analytics. Legacy `?token=
 Public delivery remains a separate path. A missing assertion is not proof that an object is public. Until a distinct public namespace and authoritative visibility metadata are wired, this Worker serves private objects only and rejects requests without a valid Backend assertion.
 
 ## Go CDN
-The Go CDN forwards the bearer value to the trusted origin as viewer authorization and bypasses cache for authenticated requests. The origin must validate the same assertion and exact asset row; it must not treat the assertion as an Appwrite session. Origin service authentication remains a separate credential.
+The Go CDN forwards the bearer value to the trusted origin as viewer authorization and bypasses cache for authenticated requests. The origin must validate the same assertion and exact asset row at `/internal/cdn/v1/{key...}`; it must not treat the assertion as an Appwrite session. Origin service authentication remains a separate credential.
 
 ## Rollout
 Configure `CDN_MEDIA_ASSERTION_SECRET` in Backend and Worker only after both sides are deployed with the same secret. Keep legacy Backend direct-storage downloads available until Flutter clients send assertion headers for image, video, HLS manifest, segment and key requests. Do not merge production enforcement before the Backend trusted-origin verifier, Go CDN integration, Flutter propagation and physical end-to-end tests pass.
