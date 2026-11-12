@@ -12,7 +12,7 @@ import (
 
 func TestTVTokenBindsSource(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.PlaybackSecret = "test-secret"
+	cfg.PlaybackSecret = "0123456789abcdef0123456789abcdef"
 	s := New(cfg)
 	src := "https://example.com/live/index.m3u8"
 	token := s.signTVToken("abc", src, 4102444800)
@@ -29,7 +29,7 @@ func TestTVTokenBindsSource(t *testing.T) {
 
 func TestTVPlaylistRewrite(t *testing.T) {
 	cfg := testConfig(t)
-	cfg.PlaybackSecret = "test-secret"
+	cfg.PlaybackSecret = "0123456789abcdef0123456789abcdef"
 	s := New(cfg)
 	base, _ := url.Parse("https://example.com/live/master.m3u8")
 	in := []byte("#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nvideo/low.m3u8\n")
@@ -44,7 +44,7 @@ func TestTVPlaylistRewrite(t *testing.T) {
 
 func TestTVRedirectRejectsPrivateTarget(t *testing.T) {
   cfg := testConfig(t)
-  cfg.PlaybackSecret = "test-secret"
+  cfg.PlaybackSecret = "0123456789abcdef0123456789abcdef"
   s := New(cfg)
   base, _ := url.Parse("https://public.example/live.m3u8")
   req := &http.Request{URL: base}
@@ -97,4 +97,16 @@ func TestTVPrefetchDefaults(t *testing.T) {
   cfg := config.Load()
   if cfg.TVPrefetchSeconds < 30*time.Second { t.Fatalf("TV prefetch must be at least 30s: %s", cfg.TVPrefetchSeconds) }
   if cfg.TVPrefetchConcurrency < 1 || cfg.TVPrefetchConcurrency > 4 { t.Fatalf("TV prefetch concurrency must remain bounded: %d", cfg.TVPrefetchConcurrency) }
+}
+
+
+func TestTVPlaybackRejectsWeakSecret(t *testing.T) {
+  cfg := testConfig(t)
+  cfg.PlaybackSecret = "too-short"
+  s := New(cfg)
+  src := "https://example.com/live/index.m3u8"
+  token := s.signTVToken("abc", src, time.Now().Add(time.Minute).Unix())
+  if s.authorizedTV("abc", src, token) {
+    t.Fatal("weak playback secret must not authorize TV media")
+  }
 }
