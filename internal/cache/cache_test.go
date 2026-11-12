@@ -28,3 +28,13 @@ func TestHotCache(t *testing.T){
  if _,err=c.Put("cold",[]byte("abcdefgh"),time.Minute,time.Minute);err!=nil{t.Fatal(err)}
  if _,_,err=c.GetHot("hot");err==nil{t.Fatal("least-recently-used hot entry should be evicted")}
 }
+
+func TestDiskEvictionAlsoRemovesHotCopy(t *testing.T) {
+ c,err:=NewWithHot(t.TempDir(),10,10)
+ if err!=nil { t.Fatal(err) }
+ if _,err=c.Put("a",[]byte("123456"),time.Minute,time.Minute);err!=nil { t.Fatal(err) }
+ if _,_,err=c.GetHot("a");err!=nil { t.Fatalf("expected hot entry before eviction: %v",err) }
+ if _,err=c.Put("b",[]byte("abcdef"),time.Minute,time.Minute);err!=nil { t.Fatal(err) }
+ if _,err=c.Get("a");err!=ErrMiss { t.Fatalf("disk entry should be evicted, got %v",err) }
+ if _,_,err=c.GetHot("a");err!=ErrMiss { t.Fatalf("hot copy survived disk eviction: %v",err) }
+}
