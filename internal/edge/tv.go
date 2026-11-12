@@ -1,7 +1,6 @@
 package edge
 
 import (
-  "compress/gzip"
   "context"
   "crypto/hmac"
   "crypto/sha256"
