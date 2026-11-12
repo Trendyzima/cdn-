@@ -143,10 +143,13 @@ there is no Supabase runtime identity dependency. Data Centre owns storage
 placement, replication, repair and deletion. The CDN is not a product API or
 authorization authority.
 
-Cloudinary and explicitly public R2 delivery origins may be used only for
-objects under the canonical `public/` namespace. Private MinIO/R2/B2 objects
-must be reached through the authenticated Backend origin gateway; the current
-Go service is not an S3 Signature V4 client. Upstash Redis is optional
+Cloudinary and public R2 endpoints are not active delivery fallbacks. Every
+cache miss is classified by the trusted Backend origin, including objects
+under `public/`; this prevents a provider URL from bypassing canonical
+visibility and deletion state. Direct provider delivery requires a separately
+reviewed, signed-public-object contract. Private MinIO/R2/B2 objects must be
+reached through the authenticated Backend origin gateway; the current Go
+service is not an S3 Signature V4 client. Upstash Redis is optional
 control-plane coordination only, never a binary media store.
 
 Recommended active flow:
