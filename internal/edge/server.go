@@ -275,7 +275,7 @@ func(s *Server)fetchUpstreamWithViewerAuthorization(rel,viewerAuthorization stri
  var lastErr error
  for _,baseURL:=range bases {
   b,e:=url.Parse(baseURL);if e!=nil{lastErr=e;continue}
-  b.Path=path.Join(b.Path,"v1",rel)
+  b.Path=path.Join(b.Path,"internal","cdn","v1",rel)
   req,e:=http.NewRequest(http.MethodGet,b.String(),nil);if e!=nil{lastErr=e;continue}
   req.Header.Set("X-Testagram-Edge",s.cfg.NodeID)
   req.Header.Set("X-Testagram-Viewer-Authorization",viewerAuthorization)
