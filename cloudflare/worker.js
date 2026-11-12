@@ -39,7 +39,7 @@ async function authorizedPrivate(key, authorization, secret) {
   try { valid = await crypto.subtle.verify("HMAC",keyData,signature,new TextEncoder().encode("v1."+parts[1])); } catch {}
   if (!valid) return {ok:false,private:true};
   const now = Math.floor(Date.now()/1000);
-  const ownerMatch = /^users\/([A-Za-z0-9-]{1,128})\/[a-f0-9]{32}$/.exec(key);
+  const ownerMatch = /^users\/([A-Za-z0-9._-]{1,128})\/[a-f0-9]{32}$/.exec(key);
   const claimsValid = payload && payload.v === "v1" && payload.iss === "testagram-backend" &&
     payload.aud === "testagram-cdn" && payload.visibility === "private" &&
     typeof payload.sub === "string" && ownerMatch && ownerMatch[1] === payload.sub &&
