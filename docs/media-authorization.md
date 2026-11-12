@@ -80,3 +80,21 @@ catalogue/playback-grant handlers, Data Centre catalogue ingestion, CDN
 verification semantics and Flutter manifest/segment/range/expiry tests are
 implemented together. The CDN must not mint TV authorization from an arbitrary
 `src` URL or caller-controlled channel identifier.
+
+
+## Edge network boundary
+
+The Go CDN's rate limiter normally keys clients from the TCP peer address.
+`TRUST_CLOUDFLARE=1` switches that input to `CF-Connecting-IP`. Enable it
+only when the origin listener is protected by a firewall/security group or
+authenticated tunnel that admits traffic exclusively from Cloudflare's
+trusted proxy path. If the Go origin can be reached directly from the
+Internet, a caller can forge `CF-Connecting-IP` and evade per-client rate
+limits. DNS proxying alone is not an origin access control. Keep this setting
+disabled until the network boundary has been proven.
+
+The CDN service credential is sent only to configured trusted origin URLs.
+Origin redirects are not followed, preventing that credential and a viewer
+assertion from being forwarded to a redirect target. Keep origin URLs private,
+use TLS for public-network origin hops, and do not put credentials in URL
+user-info, query strings or paths.
