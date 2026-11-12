@@ -5,8 +5,8 @@ import worker from "./worker.js";
 
 const secret = "0123456789abcdef0123456789abcdef";
 const key = "users/u1/0123456789abcdef0123456789abcdef";
-function assertion({objectKey=key,subject="u1",visibility="private",exp=Math.floor(Date.now()/1000)+120,iat=Math.floor(Date.now()/1000)}={}) {
-  const claims={v:"v1",iss:"testagram-backend",aud:"testagram-cdn",sub:subject,key:objectKey,visibility,iat,exp,jti:"abcdef0123456789abcdef0123456789"};
+function assertion({objectKey=key,subject="u1",owner,visibility="private",exp=Math.floor(Date.now()/1000)+120,iat=Math.floor(Date.now()/1000)}={}) {
+  const claims={v:"v1",iss:"testagram-backend",aud:"testagram-cdn",sub:subject,...(owner?{owner}:{}),key:objectKey,visibility,iat,exp,jti:"abcdef0123456789abcdef0123456789"};
   const payload=Buffer.from(JSON.stringify(claims)).toString("base64url");
   const input="v1."+payload;
   return input+"."+createHmac("sha256",secret).update(input).digest("base64url");
@@ -80,4 +80,15 @@ test("accepts Appwrite owner IDs containing underscores and periods",async()=>{
   }));
   assert.equal(res.status,200);
   assert.equal(await res.text(),"appwrite-owner-media");
+});
+
+test("accepts viewer-bound assertions for another owner's media",async()=>{
+  const objectKey="users/creator_1/0123456789abcdef0123456789abcdef";
+  const token=assertion({objectKey,subject:"viewer_2",owner:"creator_1"});
+  const res=await worker.fetch(request("/v1/"+objectKey,token),env(async requested=>{
+    assert.equal(requested,objectKey);
+    return makeObject("authorized-followed-media");
+  }));
+  assert.equal(res.status,200);
+  assert.equal(await res.text(),"authorized-followed-media");
 });
