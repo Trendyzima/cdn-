@@ -42,7 +42,7 @@ async function authorizedPrivate(key, authorization, secret) {
   const ownerMatch = /^users\/([A-Za-z0-9._-]{1,128})\/[a-f0-9]{32}$/.exec(key);
   const claimsValid = payload && payload.v === "v1" && payload.iss === "testagram-backend" &&
     payload.aud === "testagram-cdn" && payload.visibility === "private" &&
-    typeof payload.sub === "string" && ownerMatch && ownerMatch[1] === payload.sub &&
+    typeof payload.sub === "string" && ownerMatch && ownerMatch[1] === (typeof payload.owner === "string" ? payload.owner : payload.sub) &&
     payload.key === key && Number.isSafeInteger(payload.iat) && Number.isSafeInteger(payload.exp) &&
     payload.iat > 0 && payload.iat <= now + 30 && payload.exp > now &&
     payload.exp > payload.iat && payload.exp - payload.iat <= 300 &&
