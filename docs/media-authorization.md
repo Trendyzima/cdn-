@@ -51,16 +51,18 @@ origin-service credentials as the assertion signing secret.
 
 ## Public media
 
-Only objects in the explicit canonical `public/` namespace may use the
-unauthenticated shared-cache path. The trusted origin must explicitly return
-`X-Testagram-Visibility: public`; absence of this header or any other value
-must fail closed. Private namespaces such as `users/`, `profiles/` and
-`uploads/` require viewer authorization and bypass all CDN caches.
+Unauthenticated requests may use the shared-cache path only when Backend
+checks the canonical asset row and explicitly returns
+`X-Testagram-Visibility: public` for a ready public object. Testagram object
+keys commonly use `users/<owner>/<id>` for both public and private media; the
+path prefix is not a visibility signal. Missing or non-public classification
+must fail closed.
 
-Direct Cloudinary/R2 public-origin fallback is allowed only for explicit
-`public/` keys and configured public delivery origins. Never point
-`R2_PUBLIC_BASE_URL` at a private bucket or use it to expose user-private
-objects.
+**Integration blocker:** current Backend `/internal/cdn/v1/{key...}` is
+private-only and requires a viewer assertion for every object. Backend issue
+#205 tracks the missing service-authenticated public-origin branch. Until it is
+merged and tested, public cache misses fail closed and direct Cloudinary/R2
+provider fallback is disabled.
 
 ## Cloudflare R2 Worker boundary
 
