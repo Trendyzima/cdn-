@@ -32,7 +32,7 @@ func TestStaleIfOriginFails(t *testing.T){
  var fail atomic.Bool
  origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){if fail.Load(){http.Error(w,"down",500);return};w.Header().Set("X-Testagram-Visibility","public");_,_=w.Write([]byte("stable-segment"))}))
  defer origin.Close()
- cfg:=config.Config{CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:20*time.Millisecond,ManifestTTL:10*time.Millisecond,StaleIfError:time.Second,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},NodeID:"test",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,MaxIdleConns:100,MaxIdleConnsPerHost:100}
+ cfg:=config.Config{CacheDir:t.TempDir(),MaxCacheBytes:1<<20,SegmentTTL:20*time.Millisecond,ManifestTTL:10*time.Millisecond,StaleIfError:time.Second,MaxSegmentBytes:1<<20,OriginURLs:[]string{origin.URL},OriginAuthToken:"test-origin-token",NodeID:"test",RateLimitPerMin:100000,RateLimitBurst:1000,OriginTimeout:time.Second,MaxIdleConns:100,MaxIdleConnsPerHost:100}
  s:=New(cfg)
  rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts",nil));if rr.Code!=200||rr.Body.String()!="stable-segment"{t.Fatalf("initial: %d %q",rr.Code,rr.Body.String())}
  time.Sleep(30*time.Millisecond);fail.Store(true)
