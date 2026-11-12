@@ -6,7 +6,8 @@ on:
     branches: [main]
     paths:
       - "internal/**"
-      - ".github/workflows/production-media-smoke.yml"
+      - "!internal/**/*_test.go"
+      - "cloudflare/**"
 
 permissions:
   contents: read

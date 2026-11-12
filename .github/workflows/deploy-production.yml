@@ -3,7 +3,13 @@ name: Standalone CDN Source Verification (Deployment Lives in XClone)
 on:
   push:
     branches: [main]
-    paths: ["cmd/**", "internal/**", "Dockerfile", "go.mod", "go.sum", ".github/workflows/deploy-production.yml"]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "!internal/**/*_test.go"
+      - "Dockerfile"
+      - "go.mod"
+      - "go.sum"
   pull_request:
     paths: ["cmd/**", "internal/**", "Dockerfile", "go.mod", "go.sum", ".github/workflows/deploy-production.yml"]
   workflow_dispatch:
