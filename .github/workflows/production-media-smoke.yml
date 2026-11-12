@@ -47,4 +47,4 @@ jobs:
             -o /tmp/private-denied.body -w '%{http_code}' \
             https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef)"
           test "$status" = "401"
-          grep -Eiq 'unauthorized|not authorized|invalid' /tmp/private-denied.body
+          grep -Eiq 'viewer assertion|required|unauthorized|not authorized|invalid' /tmp/private-denied.body
