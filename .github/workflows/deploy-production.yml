@@ -1,4 +1,4 @@
-name: Standalone CDN Source Verification (Deployment Lives in XClone)
+name: Go CDN Source Verification (No Production Deploy)
 
 on:
   push:
@@ -39,5 +39,5 @@ jobs:
       - name: Explain canonical deployment owner
         run: |
           echo "Standalone source verification passed."
-          echo "Production deployment is owned by Trendyzima/XClone-9b4dz1-9b4dz1-8936-20260809tr."
+          echo "This workflow verifies source only; production deployment ownership and automation are tracked in Data Centre issue #53."
           echo "No SSH host/user/key, GHCR token, Cloudflare token, or CDN deployment secret is requested here."
