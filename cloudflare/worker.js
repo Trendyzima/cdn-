@@ -18,8 +18,11 @@ function keyFromPath(p) {
   }
   return decoded.join("/");
 }
+function assertionSecretConfigured(secret) {
+  return typeof secret === "string" && new TextEncoder().encode(secret).length >= 32;
+}
 async function authorizedPrivate(key, authorization, secret) {
-  if (typeof secret !== "string" || new TextEncoder().encode(secret).length < 32) return {ok:false,private:true};
+  if (!assertionSecretConfigured(secret)) return {ok:false,private:true};
   if (typeof authorization !== "string" || !authorization.startsWith("Bearer ") || authorization.length > 8192) return {ok:false,private:true};
   const token = authorization.slice(7).trim();
   const parts = token.split(".");
@@ -127,6 +130,9 @@ export default {
     if (req.method !== "GET" && req.method !== "HEAD") return new Response("Method Not Allowed",{status:405,headers:{allow:"GET, HEAD"}});
     if (u.pathname === "/healthz") return json({ok:true,service:"testagram-cdn",storage:"r2",version:WORKER_VERSION});
     if (u.pathname === "/readyz") {
+      if (!assertionSecretConfigured(env.CDN_MEDIA_ASSERTION_SECRET)) {
+        return json({ok:false,service:"testagram-cdn",storage:"r2",version:WORKER_VERSION,error:"assertion_secret_not_configured"},503);
+      }
       try {
         await env.MEDIA_BUCKET.list({limit:1});
         return json({ok:true,service:"testagram-cdn",storage:"r2",version:WORKER_VERSION});
