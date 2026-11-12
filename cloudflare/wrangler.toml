@@ -4,24 +4,13 @@ compatibility_date = "2026-10-08"
 workers_dev = false
 preview_urls = false
 
+# Deliberately no custom-domain routes. The Go CDN owns media.testagram.site.
+# Deploying this script does not activate it on a public hostname. A separate
+# hostname, API contract and security review are required before adding routes.
+
 [[r2_buckets]]
 binding = "MEDIA_BUCKET"
 bucket_name = "testagram-media"
 
 [observability]
 enabled = true
-
-# Only route Backend-asserted private user media through this Worker.
-# Do not capture public media paths until their delivery contract is implemented.
-# Public, non-sensitive Worker health endpoints used by the post-deploy smoke gate.
-[[routes]]
-pattern = "media.testagram.site/healthz"
-zone_name = "testagram.site"
-
-[[routes]]
-pattern = "media.testagram.site/readyz"
-zone_name = "testagram.site"
-
-[[routes]]
-pattern = "media.testagram.site/v1/users/*"
-zone_name = "testagram.site"
