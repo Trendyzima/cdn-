@@ -36,8 +36,8 @@ func TestStaleIfOriginFails(t *testing.T){
  s:=New(cfg)
  rr:=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts",nil));if rr.Code!=200||rr.Body.String()!="stable-segment"{t.Fatalf("initial: %d %q",rr.Code,rr.Body.String())}
  time.Sleep(30*time.Millisecond);fail.Store(true)
- rr=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts",nil));if rr.Code!=200||rr.Body.String()!="stable-segment"{t.Fatalf("stale: %d %q",rr.Code,rr.Body.String())}
- if s.staleHits.Load()!=1{t.Fatalf("expected one stale hit, got %d",s.staleHits.Load())}
+ rr=httptest.NewRecorder();s.Handler().ServeHTTP(rr,httptest.NewRequest("GET","/v1/live/a.ts",nil));if rr.Code!=http.StatusBadGateway||rr.Body.String()=="stable-segment"{t.Fatalf("origin outage must fail closed: %d %q",rr.Code,rr.Body.String())}
+ if s.staleHits.Load()!=0{t.Fatalf("stale user media must never be served, got %d stale hits",s.staleHits.Load())}
 }
 
 func TestEdgeRouteDeterministic(t *testing.T){
