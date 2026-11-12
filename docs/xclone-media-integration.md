@@ -39,6 +39,9 @@ For private media:
 
 For public media, only canonical `public/` keys are cache eligible. The
 Backend origin must explicitly return `X-Testagram-Visibility: public`.
+Current Backend origin is private-only; Backend issue #205 tracks the missing
+public branch. Until it lands, public CDN cache misses fail closed. Direct
+Cloudinary/R2 fallback is disabled to avoid bypassing canonical visibility.
 Authorization, visibility and deletion denials are authoritative and must
 invalidate any stale cached public copy.
 
