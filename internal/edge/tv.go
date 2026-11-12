@@ -26,6 +26,13 @@ import (
 var tvURIAttribute = regexp.MustCompile(`URI="([^"]+)"`)
 
 func (s *Server) tvAsset(w http.ResponseWriter, r *http.Request) {
+  // The legacy proxy accepted CDN-side PLAYBACK_SECRET grants and arbitrary
+  // upstream src URLs. That is not the approved Backend-authorized TV contract.
+  // Keep the route fail-closed until catalogue, grants and HLS subrequests are
+  // implemented and tested across Backend, Data Centre, CDN and Flutter.
+  w.Header().Set("Cache-Control", "no-store")
+  http.Error(w, "TV playback is not enabled; use the Backend TV playback contract", http.StatusServiceUnavailable)
+  return
   if r.Method != http.MethodGet && r.Method != http.MethodHead { http.Error(w,"method not allowed",405); return }
   rel, ok := cleanAssetPath(strings.TrimPrefix(r.URL.Path,"/v1/"))
   if !ok { s.rejected.Add(1); http.Error(w,"invalid path",400); return }
