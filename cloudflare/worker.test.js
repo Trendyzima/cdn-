@@ -3,174 +3,70 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import worker from "./worker.js";
 
-function makeObject(key, body, type = "image/webp") {
-  const bytes = new TextEncoder().encode(body);
-  return {
-    body: new ReadableStream({ start(c){ c.enqueue(bytes); c.close(); } }),
-    size: bytes.byteLength,
-    httpEtag: '"test-etag"',
-    range: undefined,
-    writeHttpMetadata(h){ h.set("content-type", type); },
-  };
+const secret = "0123456789abcdef0123456789abcdef";
+const key = "users/u1/0123456789abcdef0123456789abcdef";
+function assertion({objectKey=key,subject="u1",visibility="private",exp=Math.floor(Date.now()/1000)+120,iat=Math.floor(Date.now()/1000)}={}) {
+  const claims={v:"v1",iss:"testagram-backend",aud:"testagram-cdn",sub:subject,key:objectKey,visibility,iat,exp,jti:"abcdef0123456789abcdef0123456789"};
+  const payload=Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const input="v1."+payload;
+  return input+"."+createHmac("sha256",secret).update(input).digest("base64url");
+}
+function makeObject(body,type="image/webp",rangeValue) {
+  const bytes=new TextEncoder().encode(body);
+  return {body:new ReadableStream({start(c){c.enqueue(bytes);c.close();}}),size:bytes.byteLength,httpEtag:'"test-etag"',range:rangeValue,writeHttpMetadata(h){h.set("content-type",type);}};
+}
+function request(path="/v1/"+key,token=assertion(),headers={}) {
+  return new Request("https://media.testagram.site"+path,{headers:{Authorization:"Bearer "+token,...headers}});
+}
+function env(get=async()=>makeObject("private-media")) {
+  return {CDN_MEDIA_ASSERTION_SECRET:secret,MEDIA_BUCKET:{get}};
 }
 
-test("serves native /v1 media from R2", async () => {
-  const key = "users/u1/avatar.webp";
-  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async (key) => {
-    assert.equal(key, "users/u1/avatar.webp");
-    return makeObject(key, "test-image");
-  }}};
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/avatar.webp?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600)), env);
-  assert.equal(res.status, 200);
-  assert.equal(res.headers.get("content-type"), "image/webp");
-  assert.equal(res.headers.get("x-testagram-cdn"), "r2-edge");
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
-  assert.equal(await res.text(), "test-image");
+test("serves only Backend-issued object- and viewer-bound assertions",async()=>{
+  const res=await worker.fetch(request(),env(async requested=>{assert.equal(requested,key);return makeObject("private-media");}));
+  assert.equal(res.status,200);assert.equal(res.headers.get("cache-control"),"private, no-store");assert.equal(await res.text(),"private-media");
+  assert.equal(res.headers.get("x-testagram-cdn-version"),"2026-11-12-r2-backend-assertion-v1");
 });
-
-test("legacy aliases converge on the same R2 key", async () => {
-  const key = "users/u1/avatar.webp";
-  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async (key) => {
-    assert.equal(key, "users/u1/avatar.webp");
-    return makeObject(key, "legacy-image");
-  }}};
-  const res = await worker.fetch(new Request("https://media.testagram.site/users/u1/avatar.webp?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600)), env);
-  assert.equal(res.status, 200);
-  assert.equal(await res.text(), "legacy-image");
+test("rejects missing, expired, wrong-key, wrong-viewer and public assertions before R2",async()=>{
+  let reads=0;const e=env(async()=>{reads++;return makeObject("should-not-read");});
+  const invalid=[
+    request("/v1/"+key,""),
+    request("/v1/"+key,assertion({exp:Math.floor(Date.now()/1000)-1})),
+    request("/v1/"+key,assertion({objectKey:"users/u1/ffffffffffffffffffffffffffffffff"})),
+    request("/v1/"+key,assertion({subject:"u2"})),
+    request("/v1/"+key,assertion({visibility:"public"})),
+    request("/v1/"+key,assertion({exp:Math.floor(Date.now()/1000)+600})),
+  ];
+  for(const req of invalid){const res=await worker.fetch(req,e);assert.equal(res.status,401);}
+  assert.equal(reads,0);
 });
-
-test("missing objects remain a real 404", async () => {
-  const key = "users/u1/missing.webp";
-  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async () => null }};
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600)), env);
-  assert.equal(res.status, 404);
-  assert.equal(res.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
+test("rejects tampered claims and query-string tokens",async()=>{
+  let reads=0;const e=env(async()=>{reads++;return makeObject("x");});
+  const token=assertion();const tampered=token.slice(0,-1)+(token.endsWith("A")?"B":"A");
+  assert.equal((await worker.fetch(request("/v1/"+key,tampered),e)).status,401);
+  const q=await worker.fetch(new Request("https://media.testagram.site/v1/"+key+"?token="+token),e);
+  assert.equal(q.status,400);assert.equal(reads,0);
 });
-
-test("health and readiness expose the deployed Worker identity", async () => {
-  const env = { MEDIA_BUCKET: { list: async () => ({ objects: [] }) } };
-  const health = await worker.fetch(new Request("https://media.testagram.site/healthz"), env);
-  const ready = await worker.fetch(new Request("https://media.testagram.site/readyz"), env);
-  assert.equal(health.status, 200);
-  assert.equal(ready.status, 200);
-  assert.equal(health.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
-  assert.equal(ready.headers.get("x-testagram-cdn-version"), "2026-11-11-r2-viewer-scoped-token-3");
+test("private byte ranges preserve 206 and no-store semantics",async()=>{
+  const e=env(async(_key,options)=>{assert.deepEqual(options.range,{offset:0,length:4});return {...makeObject("test","video/mp4",{offset:0,length:4}),size:10};});
+  const res=await worker.fetch(request("/v1/"+key,assertion(),{Range:"bytes=0-3"}),e);
+  assert.equal(res.status,206);assert.equal(res.headers.get("content-range"),"bytes 0-3/10");assert.equal(res.headers.get("cache-control"),"private, no-store");
 });
-
-test("range requests return HTTP 206", async () => {
-  const key = "users/u1/video.mp4";
-  const env = { PLAYBACK_SECRET: "0123456789abcdef0123456789abcdef", MEDIA_BUCKET: { get: async (_key, options) => {
-    assert.deepEqual(options.range, { offset: 0, length: 4 });
-    return { ...makeObject("users/u1/video.mp4", "test-video", "video/mp4"), range: { offset: 0, length: 4 } };
-  }}};
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken(key, "0123456789abcdef0123456789abcdef", Math.floor(Date.now()/1000)+600), { headers: { Range: "bytes=0-3" }}), env);
-  assert.equal(res.status, 206);
-  assert.equal(res.headers.get("content-range"), "bytes 0-3/10");
-  assert.equal(res.headers.get("accept-ranges"), "bytes");
-});
-
-test("path traversal never reaches R2", async () => {
-  let called = false;
-  const env = { MEDIA_BUCKET: { get: async () => { called = true; return null; } } };
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/../secret.webp"), env);
-  assert.equal(res.status, 404);
-  assert.equal(called, false);
-});
-
-
-function playbackToken(key, secret, exp) {
-  return String(exp) + "." + createHmac("sha256", secret).update(key + "|" + String(exp)).digest("hex");
-}
-
-
-function viewerScopedPlaybackToken(key, viewerId, visibility, secret, exp) {
-  const value = String(exp);
-  const message = key + "|" + viewerId + "|" + visibility + "|" + value;
-  return value + "." + viewerId + "." + visibility + "." + createHmac("sha256", secret).update(message).digest("hex");
-}
-
-test("viewer-scoped private playback tokens are accepted and bound to object, viewer and visibility", async () => {
-  const secret = "0123456789abcdef0123456789abcdef";
-  const key = "users/u1/private.webp";
-  const exp = Math.floor(Date.now() / 1000) + 600;
-  const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async (requested) => {
-    assert.equal(requested, key);
-    return makeObject(key, "scoped-private-image");
-  }}};
-  const token = viewerScopedPlaybackToken(key, "viewer-42", "private", secret, exp);
-  const valid = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + token), env);
-  assert.equal(valid.status, 200);
-  assert.equal(valid.headers.get("cache-control"), "private, no-store");
-
-  const wrongViewer = viewerScopedPlaybackToken(key, "viewer-43", "private", secret, exp);
-  const tampered = token.replace("viewer-42", "viewer-43");
-  assert.notEqual(tampered, wrongViewer);
-  const wrongVisibility = viewerScopedPlaybackToken(key, "viewer-42", "public", secret, exp);
-  for (const invalid of [tampered, wrongVisibility]) {
-    const response = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + invalid), env);
-    assert.equal(response.status, 401);
+test("missing and weak assertion secrets fail closed without reading R2",async()=>{
+  let reads=0;const bucket={get:async()=>{reads++;return makeObject("x");}};
+  for(const e of [{MEDIA_BUCKET:bucket},{CDN_MEDIA_ASSERTION_SECRET:"weak",MEDIA_BUCKET:bucket}]){
+    const res=await worker.fetch(request(),e);assert.equal(res.status,401);
   }
+  assert.equal(reads,0);
 });
-
-test("private media requires a valid expiry-bound playback token", async () => {
-  const secret = "0123456789abcdef0123456789abcdef";
-  const key = "users/u1/private.webp";
-  const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async (requested) => {
-    assert.equal(requested, key);
-    return makeObject(key, "private-image");
-  }}};
-  const missing = await worker.fetch(new Request("https://media.testagram.site/v1/" + key), env);
-  assert.equal(missing.status, 401);
-  const expired = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken(key, secret, Math.floor(Date.now()/1000)-1)), env);
-  assert.equal(expired.status, 401);
-  const wrongKey = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken("users/u1/other.webp", secret, Math.floor(Date.now()/1000)+600)), env);
-  assert.equal(wrongKey.status, 401);
-  const valid = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + playbackToken(key, secret, Math.floor(Date.now()/1000)+600)), env);
-  assert.equal(valid.status, 200);
-  assert.equal(valid.headers.get("cache-control"), "private, no-store");
-  assert.equal(await valid.text(), "private-image");
+test("path traversal never reaches R2",async()=>{
+  let reads=0;const res=await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/../secret.webp"),{CDN_MEDIA_ASSERTION_SECRET:secret,MEDIA_BUCKET:{get:async()=>{reads++;return null;}}});
+  assert.equal(res.status,404);assert.equal(reads,0);
 });
-
-test("encoded and double-encoded traversal never reaches R2", async () => {
-  let calls = 0;
-  const env = { MEDIA_BUCKET: { get: async () => { calls++; return null; } } };
-  for (const path of [
-    "/v1/users/u1/%2e%2e/secret.webp",
-    "/v1/users/u1/%252e%252e/secret.webp",
-    "/v1/users/u1/%2Fsecret.webp",
-    "/v1/users/u1/%5Csecret.webp",
-  ]) {
-    const res = await worker.fetch(new Request("https://media.testagram.site" + path), env);
-    assert.equal(res.status, 404);
-  }
-  assert.equal(calls, 0);
-});
-
-test("malformed and multi-range requests fail closed", async () => {
-  let calls = 0;
-  const key = "users/u1/video.mp4";
-  const secret = "0123456789abcdef0123456789abcdef";
-  const token = playbackToken(key, secret, Math.floor(Date.now()/1000)+600);
-  const env = { PLAYBACK_SECRET: secret, MEDIA_BUCKET: { get: async () => { calls++; return null; } } };
-  for (const rangeHeader of ["bytes=", "bytes=-0", "bytes=5-4", "bytes=0-1,4-5", "items=0-1"]) {
-    const res = await worker.fetch(new Request("https://media.testagram.site/v1/" + key + "?token=" + token, {headers:{Range:rangeHeader}}), env);
-    assert.equal(res.status, 416);
-  }
-  assert.equal(calls, 0);
-});
-
-test("private R2 worker fails closed when signing secret is missing", async () => {
-  let reads = 0;
-  const env = { MEDIA_BUCKET: { get: async () => { reads++; return makeObject("users/u1/private.webp", "private"); } } };
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/private.webp"), env);
-  assert.equal(res.status, 401);
-  assert.equal(reads, 0);
-});
-
-test("private R2 worker rejects weak signing secrets", async () => {
-  let reads = 0;
-  const env = { PLAYBACK_SECRET: "too-short", MEDIA_BUCKET: { get: async () => { reads++; return makeObject("users/u1/private.webp", "private"); } } };
-  const res = await worker.fetch(new Request("https://media.testagram.site/v1/users/u1/private.webp?token=1234567890.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), env);
-  assert.equal(res.status, 401);
-  assert.equal(reads, 0);
+test("health and readiness expose Worker identity",async()=>{
+  const e={MEDIA_BUCKET:{list:async()=>({objects:[]})}};
+  const health=await worker.fetch(new Request("https://media.testagram.site/healthz"),e);
+  const ready=await worker.fetch(new Request("https://media.testagram.site/readyz"),e);
+  assert.equal(health.status,200);assert.equal(ready.status,200);
+  assert.equal(health.headers.get("x-testagram-cdn-version"),"2026-11-12-r2-backend-assertion-v1");
 });
