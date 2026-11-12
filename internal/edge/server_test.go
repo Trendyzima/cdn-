@@ -46,7 +46,7 @@ func testConfig(t *testing.T)config.Config{
  }
 }
 func TestMediaCachePolicy(t *testing.T) {
- if got:=cacheControl("users/a/thumbnail.webp"); !strings.Contains(got, "immutable") { t.Fatalf("image cache policy not immutable: %s", got) }
+ if got:=cacheControl("users/a/thumbnail.webp"); !strings.Contains(got, "max-age=0") || !strings.Contains(got,"s-maxage=300") || strings.Contains(got,"immutable") { t.Fatalf("mutable image cache policy is unsafe: %s", got) }
  if got:=cacheControl("live/channel/seg-1.m4s"); !strings.Contains(got, "s-maxage=120") { t.Fatalf("segment cache policy changed unexpectedly: %s", got) }
  if got:=cacheControl("live/channel/index.m3u8"); !strings.Contains(got, "max-age=0") { t.Fatalf("manifest cache policy changed unexpectedly: %s", got) }
 }
@@ -457,4 +457,25 @@ func TestPrivateOriginMustExplicitlyClassifyResponse(t *testing.T) {
  s.Handler().ServeHTTP(rr,req)
  if rr.Code!=http.StatusForbidden { t.Fatalf("unclassified private origin response status=%d",rr.Code) }
  if strings.Contains(rr.Body.String(),"unclassified-private-bytes") { t.Fatal("unclassified bytes were delivered") }
+}
+
+func TestPublicMediaOriginOutageDoesNotServeStaleBytes(t *testing.T) {
+ var unavailable atomic.Bool
+ origin:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  if unavailable.Load() { http.Error(w,"origin unavailable",http.StatusServiceUnavailable); return }
+  w.Header().Set("X-Testagram-Visibility","public")
+  _,_=w.Write([]byte("previously-public-bytes"))
+ }))
+ defer origin.Close()
+ cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.SegmentTTL=15*time.Millisecond;cfg.StaleIfError=time.Minute
+ s:=New(cfg)
+ first:=httptest.NewRecorder()
+ s.Handler().ServeHTTP(first,httptest.NewRequest(http.MethodGet,"/v1/users/u1/public.webp",nil))
+ if first.Code!=http.StatusOK || first.Body.String()!="previously-public-bytes" { t.Fatalf("initial public response status=%d body=%q",first.Code,first.Body.String()) }
+ time.Sleep(25*time.Millisecond)
+ unavailable.Store(true)
+ second:=httptest.NewRecorder()
+ s.Handler().ServeHTTP(second,httptest.NewRequest(http.MethodGet,"/v1/users/u1/public.webp",nil))
+ if second.Code!=http.StatusBadGateway { t.Fatalf("origin outage status=%d",second.Code) }
+ if strings.Contains(second.Body.String(),"previously-public-bytes") { t.Fatal("stale user media was served while Backend origin was unavailable") }
 }
