@@ -156,7 +156,7 @@ func TestBackendAssertionBypassesCacheAndForwardsIdentity(t *testing.T) {
  }))
  defer origin.Close()
  cfg:=testConfig(t);cfg.OriginURLs=[]string{origin.URL};cfg.OriginAuthToken="origin-secret"
- s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer appwrite-session")
+ s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature")
  s.Handler().ServeHTTP(rr,req)
  if rr.Code!=http.StatusOK||!seen{t.Fatalf("authorized request failed status=%d seen=%v body=%s",rr.Code,seen,rr.Body.String())}
  if rr.Header().Get("Cache-Control")!="private, no-store"||rr.Header().Get("X-Cache")!="BYPASS"{t.Fatalf("private cache policy incorrect: %+v",rr.Header())}
@@ -169,7 +169,7 @@ func TestPrivateAuthorizationDenialCannotFailOverToAnotherOrigin(t *testing.T) {
  permissive:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){secondHit=true;w.Write([]byte("must-not-leak"))}))
  defer permissive.Close()
  cfg:=testConfig(t);cfg.OriginURLs=[]string{denied.URL,permissive.URL};cfg.OriginAuthToken="origin-secret"
- s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer appwrite-session")
+ s:=New(cfg);rr:=httptest.NewRecorder();req:=httptest.NewRequest("GET","/v1/users/u1/private.webp",nil);req.Header.Set("Authorization","Bearer v1.eyJ2IjoidjEiLCJpc3MiOiJ0ZXN0YWdyYW0tYmFja2VuZCIsImF1ZCI6InRlc3RhZ3JhbS1jZG4ifQ.signature")
  s.Handler().ServeHTTP(rr,req)
  if rr.Code!=http.StatusForbidden||secondHit{t.Fatalf("authorization denial failed open: status=%d secondOriginHit=%v",rr.Code,secondHit)}
 }
