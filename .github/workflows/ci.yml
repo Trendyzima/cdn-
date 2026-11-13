@@ -43,8 +43,25 @@ jobs:
         run: |
           mkdir -p container/cache
           CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o container/testagram-edge ./cmd/edge
+          CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o container/healthcheck ./cmd/healthcheck
           cp /etc/ssl/certs/ca-certificates.crt container/ca-certificates.crt
           touch container/cache/keep.txt
+      - name: Validate scratch runtime image and built-in readiness probe
+        run: |
+          docker build -f Dockerfile.runtime -t testagram-edge:ci .
+          docker run -d --name testagram-edge-ci -p 18080:8080 \
+            -e ORIGIN_URL=http://127.0.0.1:1 \
+            -e ORIGIN_AUTH_TOKEN=ci-only-origin-token-not-for-production \
+            testagram-edge:ci
+          for attempt in $(seq 1 30); do
+            state="$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-ci)"
+            if [[ "$state" == "healthy" ]]; then break; fi
+            if [[ "$state" == "unhealthy" ]]; then docker logs testagram-edge-ci; exit 1; fi
+            sleep 2
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-ci)" = "healthy"
+          docker exec testagram-edge-ci /healthcheck
+          docker rm -f testagram-edge-ci
       - name: Upload container inputs
         uses: actions/upload-artifact@v4
         with:
