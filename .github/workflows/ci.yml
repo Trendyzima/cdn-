@@ -70,8 +70,44 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  image:
+  runtime-image-verify:
+    name: Verify artifact-built scratch image and writable cache
     needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: edge-container-inputs
+          path: container
+      - name: Build and run the exact artifact-built scratch image
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile.runtime -t testagram-edge:artifact-ci .
+          docker volume create testagram-edge-cache-artifact-ci >/dev/null
+          cleanup() {
+            docker rm -f testagram-edge-artifact-ci >/dev/null 2>&1 || true
+            docker volume rm testagram-edge-cache-artifact-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name testagram-edge-artifact-ci --read-only --tmpfs /tmp \
+            -v testagram-edge-cache-artifact-ci:/cache \
+            -e ORIGIN_URL=http://127.0.0.1:1 \
+            -e ORIGIN_AUTH_TOKEN=ci-only-origin-token-not-for-production \
+            testagram-edge:artifact-ci
+          for attempt in $(seq 1 30); do
+            running="$(docker inspect --format '{{.State.Running}}' testagram-edge-artifact-ci)"
+            if [[ "$running" != "true" ]]; then docker logs testagram-edge-artifact-ci; exit 1; fi
+            state="$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-artifact-ci)"
+            if [[ "$state" == "healthy" ]]; then break; fi
+            if [[ "$state" == "unhealthy" ]]; then docker logs testagram-edge-artifact-ci; exit 1; fi
+            sleep 2
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-artifact-ci)" = "healthy"
+          docker exec testagram-edge-artifact-ci /healthcheck
+
+  image:
+    needs: [test, runtime-image-verify]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
