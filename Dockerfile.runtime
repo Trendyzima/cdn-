@@ -1,7 +1,9 @@
 FROM scratch
 
-COPY container/testagram-edge /testagram-edge
-COPY container/healthcheck /healthcheck
+# Artifact extraction does not reliably preserve executable bits.
+
+COPY --chmod=0555 container/testagram-edge /testagram-edge
+COPY --chmod=0555 container/healthcheck /healthcheck
 COPY container/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --chown=65532:65532 container/cache/keep.txt /cache/.keep
 
