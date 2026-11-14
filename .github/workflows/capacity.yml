@@ -11,6 +11,18 @@ permissions:
   contents: read
 
 jobs:
+  envelope-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.4'
+          cache: true
+      - name: Validate 100k viewer egress and N+1 fleet model
+        run: go test ./internal/edge -run '^TestCapacityEnvelope' -count=1 -v
+
   logical-1m:
     runs-on: ubuntu-latest
     timeout-minutes: 20
