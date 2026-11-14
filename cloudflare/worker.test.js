@@ -69,7 +69,8 @@ test("canonical media hostname proxies to the Go CDN and preserves its identity"
   assert.deepEqual(await response.json(), { ok: true, service: "testagram-cdn" });
 });
 
-test("public API hides readiness and metrics while preserving liveness", async () => {
+test("public API hides readiness and metrics while preserving liveness", async (t) => {
+  restoreFetch(t);
   let fetches = 0;
   globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
   const ready = await worker.fetch(new Request("https://api.testagram.site/readyz"), env());
@@ -122,7 +123,8 @@ test("preserves range requests and viewer authorization for private media", asyn
   assert.equal(response.headers.get("cache-control"), "private, no-store");
 });
 
-test("fails closed when either origin is missing, insecure, or points back to a canonical host", async () => {
+test("fails closed when either origin is missing, insecure, or points back to a canonical host", async (t) => {
+  restoreFetch(t);
   let fetches = 0;
   globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
   const cases = [
@@ -138,7 +140,8 @@ test("fails closed when either origin is missing, insecure, or points back to a 
   assert.equal(fetches, 0);
 });
 
-test("rejects unknown hostnames instead of acting as an open proxy", async () => {
+test("rejects unknown hostnames instead of acting as an open proxy", async (t) => {
+  restoreFetch(t);
   let fetches = 0;
   globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
   const response = await worker.fetch(new Request("https://attacker.example/"), env());
