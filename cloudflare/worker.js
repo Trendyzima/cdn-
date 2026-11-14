@@ -84,7 +84,9 @@ export default {
       return json({ ok: false, error: error.message }, 503);
     }
 
-    const target = new URL(incoming.pathname + incoming.search, origin);
+    const target = new URL(origin.toString());
+    target.pathname = incoming.pathname;
+    target.search = incoming.search;
     const headers = new Headers(request.headers);
     const isWebSocket = request.headers.get("upgrade")?.toLowerCase() === "websocket";
 
