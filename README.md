@@ -147,8 +147,9 @@ deployment, checks that any existing custom-domain owner is this exact Worker,
 deploys the gateway to `api.testagram.site` and `media.testagram.site`, then
 checks public service identity, private API readiness/metrics, CDN readiness
 and private-media denial. It does not require a public VPS IPv4 or change DNS
-records manually. Cloudflare credentials require Account Workers Scripts
-Read/Write and access to the `testagram.site` zone.
+records manually. The Cloudflare token needs Account Workers Scripts Read/Write and Zone
+Read plus DNS Read/Write for `testagram.site` so Wrangler can reconcile
+custom-domain records.
 
 Backend is the authority for identity, media ownership, visibility and
 viewer authorization. Appwrite is used for identity/session verification;
