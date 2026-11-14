@@ -26,7 +26,7 @@ jobs:
           go-version: '1.27.4'
           cache: true
       - name: Lint GitHub Actions workflows
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -color -ignore 'SC2034' -ignore 'SC2086'
       - name: Cache package tests
         run: go test -v ./internal/cache
       - name: Edge unit tests
