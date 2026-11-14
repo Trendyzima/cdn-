@@ -38,7 +38,7 @@ function configuredOrigin(raw, publicHost) {
     origin.hostname.endsWith(".testagram.site") ||
     origin.hostname === "localhost" ||
     origin.hostname.includes(":") ||
-    /^\\d{1,3}(?:\\.\\d{1,3}){3}$/.test(origin.hostname) ||
+    /^\d{1,3}(?:\.\d{1,3}){3}$/.test(origin.hostname) ||
     origin.hostname.endsWith(".local") ||
     origin.hostname.endsWith(".internal") ||
     !origin.hostname.includes(".")
