@@ -150,48 +150,24 @@ jobs:
               fi
             done <<<"$exact_routes"
 
-            cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?type=CNAME&name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
-            jq -e '.success == true' <<<"$cnames" >/dev/null || {
-              echo "::error::Cannot inspect exact CNAME records for $host; verify Zone DNS Read/Write."
-              jq -c '.errors // []' <<<"$cnames"; exit 1;
-            }
           done
-          echo "Cloudflare zone, exact Worker ownership/routes, and DNS records passed preflight."
+
+          media_owner="$(jq -r --arg host "media.testagram.site" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | .service' <<<"$domains" | head -n 1)"
+          if [[ "$media_owner" != "testagram-cdn" ]]; then
+            echo "::error::media.testagram.site must remain attached to the existing testagram-cdn Worker Custom Domain; refusing to replace unexpected or missing ownership."
+            exit 1
+          fi
+
+          api_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
+            echo "::error::api.testagram.site must have an existing proxied A/AAAA/CNAME record for its Worker Route. No DNS records will be changed."
+            jq -c '.errors // .result' <<<"$api_dns"; exit 1;
+          }
+          echo "Cloudflare zone, exact Worker ownership/routes and proxied API DNS passed preflight. No DNS records will be changed."
 
       - name: Test canonical gateway contract
         working-directory: cloudflare
         run: npm test
-
-      - name: Remove only conflicting exact routes and stale CNAME records
-        shell: bash
-        env:
-          ZONE_ID: ${{ steps.preflight.outputs.zone_id }}
-        run: |
-          set -euo pipefail
-          API=https://api.cloudflare.com/client/v4
-          auth=(-H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json")
-          domains="$(curl -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" "${auth[@]}")"
-          routes="$(curl -fsS "$API/zones/$ZONE_ID/workers/routes?per_page=100&page=1" "${auth[@]}")"
-
-          for host in api.testagram.site media.testagram.site; do
-            owner="$(jq -r --arg host "$host" --arg zone "$ZONE_ID" '.result[]? | select(.hostname==$host and .zone_id==$zone) | .service' <<<"$domains" | head -n 1)"
-            while IFS=$'\t' read -r script route_id; do
-              [[ -n "$route_id" ]] || continue
-              echo "Removing exact legacy Worker route $host/* from $script; the custom domain will own this hostname."
-              deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/workers/routes/$route_id" "${auth[@]}")"
-              jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
-            done < <(jq -r --arg host "$host" '.result[]? | select(.pattern==($host+"/*") and .script=="testagram-cdn") | [.script,.id] | @tsv' <<<"$routes")
-
-            if [[ -z "$owner" ]]; then
-              cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$ZONE_ID/dns_records?type=CNAME&name=$host&per_page=100" "${auth[@]}")"
-              while IFS=$'\t' read -r id; do
-                [[ -n "$id" ]] || continue
-                echo "Removing stale exact CNAME for $host so Wrangler can create its Worker custom domain."
-                deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/dns_records/$id" "${auth[@]}")"
-                jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
-              done < <(jq -r '.result[]? | .id' <<<"$cnames")
-            fi
-          done
 
       - name: Deploy Worker gateway on canonical API and media hostnames
         uses: cloudflare/wrangler-action@v3
