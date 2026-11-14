@@ -1,18 +1,32 @@
-name: Deprecated R2 media Worker deployment (disabled)
+name: Validate Cloudflare gateway source (no production deployment)
 
 on:
+  pull_request:
+    paths:
+      - "cloudflare/**"
+      - ".github/workflows/deploy-private-r2-worker.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  retired:
+  validate-only:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Explain the retired deployment path
-        shell: bash
-        run: |
-          echo "::error::The R2 Worker is no longer the canonical media origin and this deployment is intentionally disabled."
-          echo "Use the 'Restore canonical Testagram API and Go CDN host routing' workflow with the verified InstaBox port 8080 and 8081 HTTPS origins."
-          exit 1
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test Cloudflare gateway contract
+        working-directory: cloudflare
+        run: npm test
+
+      - name: Validate Wrangler bundle without deploying
+        working-directory: cloudflare
+        run: npx --yes wrangler@4.50.0 deploy --dry-run --config wrangler.toml --outdir /tmp/testagram-gateway-dry-run
