@@ -4,12 +4,15 @@ compatibility_date = "2026-11-15"
 workers_dev = false
 preview_urls = false
 
-# These custom domains are the public gateway only. API_ORIGIN and CDN_ORIGIN
-# are the verified, per-machine InstaBox HTTPS port URLs supplied at release.
+# api.testagram.site already has proxied DNS. Use a Worker Route so the
+# gateway can proxy to the published InstaBox Backend origin without replacing
+# the existing A/AAAA records.
 [[routes]]
-pattern = "api.testagram.site"
-custom_domain = true
+pattern = "api.testagram.site/*"
+zone_name = "testagram.site"
 
+# media.testagram.site is already attached to this Worker as a Custom Domain.
+# Updating this script replaces the old R2-serving implementation in place.
 [[routes]]
 pattern = "media.testagram.site"
 custom_domain = true
