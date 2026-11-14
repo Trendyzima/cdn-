@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import worker from "./worker.js";
 
-const apiOrigin = "https://machine-api.instabox.example";
-const cdnOrigin = "https://machine-cdn.instabox.example";
+const apiOrigin = "https://machine-api.instabox.sh";
+const cdnOrigin = "https://machine-cdn.instabox.sh";
 
 function env(overrides = {}) {
   return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, ...overrides };
@@ -80,6 +80,39 @@ test("public API hides readiness and metrics while preserving liveness", async (
   assert.equal(fetches, 0);
 });
 
+test("replaces spoofed forwarding metadata and strips hop-by-hop headers", async (t) => {
+  restoreFetch(t);
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = request;
+    return new Response("ok");
+  };
+  const response = await worker.fetch(new Request(
+    "https://api.testagram.site/healthz",
+    {
+      headers: {
+        "cf-connecting-ip": "203.0.113.17",
+        "x-forwarded-for": "198.51.100.99",
+        "x-forwarded-host": "attacker.example",
+        "x-forwarded-proto": "http",
+        "x-forwarded-port": "8080",
+        "x-real-ip": "192.0.2.55",
+        forwarded: "for=192.0.2.55;proto=http;host=attacker.example",
+        connection: "keep-alive, x-tenant-override",
+        "keep-alive": "timeout=5",
+        "x-tenant-override": "attacker",
+      },
+    },
+  ), env());
+  assert.equal(response.status, 200);
+  assert.equal(upstream.headers.get("x-forwarded-for"), "203.0.113.17");
+  assert.equal(upstream.headers.get("x-forwarded-host"), "api.testagram.site");
+  assert.equal(upstream.headers.get("x-forwarded-proto"), "https");
+  for (const name of ["x-forwarded-port", "x-real-ip", "forwarded", "connection", "keep-alive", "x-tenant-override", "cf-connecting-ip"]) {
+    assert.equal(upstream.headers.get(name), null, `${name} must not reach the Backend`);
+  }
+});
+
 test("forwards API methods, authorization, JSON body and query without changing the contract", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -132,6 +165,8 @@ test("fails closed when either origin is missing, insecure, or points back to a 
     [new Request("https://api.testagram.site/healthz"), env({ API_ORIGIN: "http://machine.instabox.example" })],
     [new Request("https://media.testagram.site/healthz"), env({ CDN_ORIGIN: "https://media.testagram.site" })],
     [new Request("https://media.testagram.site/healthz"), env({ CDN_ORIGIN: "https://127.0.0.1" })],
+    [new Request("https://media.testagram.site/healthz"), env({ CDN_ORIGIN: "https://stale.workers.dev" })],
+    [new Request("https://media.testagram.site/healthz"), env({ CDN_ORIGIN: "https://placeholder.example" })],
   ];
   for (const [request, bindings] of cases) {
     const response = await worker.fetch(request, bindings);
