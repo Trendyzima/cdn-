@@ -194,12 +194,16 @@ jobs:
           done
 
       - name: Deploy Worker gateway on canonical API and media hostnames
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare
-          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}"
+        shell: bash
+        working-directory: cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          API_ORIGIN: ${{ inputs.api_origin }}
+          CDN_ORIGIN: ${{ inputs.cdn_origin }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.50.0 deploy --config wrangler.toml --account-id "$CLOUDFLARE_ACCOUNT_ID" --var "API_ORIGIN:$API_ORIGIN" --var "CDN_ORIGIN:$CDN_ORIGIN"
 
       - name: Verify canonical public API and Go CDN identities
         shell: bash
