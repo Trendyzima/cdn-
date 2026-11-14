@@ -56,7 +56,10 @@ jobs:
                   or u.path not in ("", "/") or u.query or u.fragment or u.port
                   or u.hostname == canonical or u.hostname == "testagram.site"
                   or u.hostname.endswith(".testagram.site")
-                  or u.hostname == "localhost" or u.hostname.endswith((".local", ".internal"))):
+                  or u.hostname == "api.instabox.sh"
+                  or u.hostname == "localhost"
+                  or u.hostname.endswith((".local", ".internal", ".example", ".invalid", ".test", ".onion",
+                                           ".workers.dev", ".pages.dev", ".cloudflare.com", ".cloudflare.net"))):
                   raise SystemExit(f"{label} must be a plain HTTPS origin on a separate public hostname")
               try:
                   ipaddress.ip_address(u.hostname)
@@ -64,6 +67,8 @@ jobs:
                   pass
               else:
                   raise SystemExit(f"{label} must use the InstaBox public hostname, not a literal IP")
+          if urlparse(sys.argv[1]).hostname == urlparse(sys.argv[2]).hostname:
+              raise SystemExit("API_ORIGIN and CDN_ORIGIN must be different published port hostnames")
           PY
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
