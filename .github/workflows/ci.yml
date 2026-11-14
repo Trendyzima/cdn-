@@ -27,6 +27,9 @@ jobs:
       - name: Test Cloudflare canonical hostname gateway
         working-directory: cloudflare
         run: npm test
+      - name: Validate Wrangler custom-domain configuration without deploying
+        working-directory: cloudflare
+        run: npx --yes wrangler@4 deploy --dry-run --config wrangler.toml --var API_ORIGIN:https://api-origin.example --var CDN_ORIGIN:https://cdn-origin.example
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.4'
