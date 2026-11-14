@@ -102,6 +102,7 @@ jobs:
           echo "Both origins identify the correct services; CDN readiness and private-media denial passed."
 
       - name: Preflight Cloudflare zone and existing hostname ownership
+        id: preflight
         shell: bash
         run: |
           set -euo pipefail
@@ -112,33 +113,85 @@ jobs:
             jq -c '.errors // []' <<<"$zones"; exit 1;
           }
           zone_id="$(jq -r '.result[0].id' <<<"$zones")"
+          echo "zone_id=$zone_id" >> "$GITHUB_OUTPUT"
+
           domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$domains" >/dev/null || {
             echo "::error::Cannot inspect all Worker custom domains; verify Workers Scripts Read/Write and review pagination."
             jq -c '.errors // []' <<<"$domains"; exit 1;
           }
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$routes" >/dev/null || {
+            echo "::error::Cannot inspect all Worker routes; verify Zone Workers Routes Read/Write and review pagination."
+            jq -c '.errors // []' <<<"$routes"; exit 1;
+          }
+          broad="$(jq -r '.result[]? | select(.pattern=="*.testagram.site/*" or .pattern=="testagram.site/*") | .pattern' <<<"$routes")"
+          if [[ -n "$broad" ]]; then
+            echo "::error::A broad zone-wide Worker route could affect unrelated Testagram services. Review it manually before cutover:"
+            printf '%s\n' "$broad"; exit 1;
+          fi
+
           for host in api.testagram.site media.testagram.site; do
-            owners="$(jq -r --arg host "$host" '.result[]? | select(.hostname==$host and .zone_name=="testagram.site") | .service' <<<"$domains")"
-            while IFS= read -r service; do
+            owners="$(jq -r --arg host "$host" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | [.service,(.environment // "production")] | @tsv' <<<"$domains")"
+            while IFS=$'\t' read -r service environment; do
               [[ -n "$service" ]] || continue
-              if [[ "$service" != "testagram-cdn" ]]; then
-                echo "::error::Refusing to replace $host because it is attached to unexpected Worker service $service."
+              if [[ "$service" != "testagram-cdn" || ( "$environment" != "production" && "$environment" != "" ) ]]; then
+                echo "::error::Refusing to replace $host because it is attached to unexpected Worker service/environment: $service/$environment."
                 exit 1
               fi
             done <<<"$owners"
-            if [[ -z "$owners" ]]; then
-              cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?type=CNAME&name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
-              jq -e '.success == true and (.result | length == 0)' <<<"$cnames" >/dev/null || {
-                echo "::error::Cannot attach $host as a Worker custom domain while an existing CNAME record owns it. Review and remove only that exact CNAME, then retry."
-                jq -c '.errors // .result' <<<"$cnames"; exit 1;
-              }
-            fi
+
+            exact_routes="$(jq -r --arg host "$host" '.result[]? | select(.pattern==($host+"/*")) | [.script,.id] | @tsv' <<<"$routes")"
+            while IFS=$'\t' read -r script route_id; do
+              [[ -n "$route_id" ]] || continue
+              if [[ "$script" != "testagram-cdn" ]]; then
+                echo "::error::Refusing to replace $host because exact Worker route belongs to $script."
+                exit 1
+              fi
+            done <<<"$exact_routes"
+
+            cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?type=CNAME&name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$cnames" >/dev/null || {
+              echo "::error::Cannot inspect exact CNAME records for $host; verify Zone DNS Read/Write."
+              jq -c '.errors // []' <<<"$cnames"; exit 1;
+            }
           done
-          echo "Cloudflare zone and exact hostname ownership passed preflight."
+          echo "Cloudflare zone, exact Worker ownership/routes, and DNS records passed preflight."
 
       - name: Test canonical gateway contract
         working-directory: cloudflare
         run: npm test
+
+      - name: Remove only conflicting exact routes and stale CNAME records
+        shell: bash
+        env:
+          ZONE_ID: ${{ steps.preflight.outputs.zone_id }}
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          auth=(-H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json")
+          domains="$(curl -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" "${auth[@]}")"
+          routes="$(curl -fsS "$API/zones/$ZONE_ID/workers/routes?per_page=100&page=1" "${auth[@]}")"
+
+          for host in api.testagram.site media.testagram.site; do
+            owner="$(jq -r --arg host "$host" --arg zone "$ZONE_ID" '.result[]? | select(.hostname==$host and .zone_id==$zone) | .service' <<<"$domains" | head -n 1)"
+            while IFS=$'\t' read -r script route_id; do
+              [[ -n "$route_id" ]] || continue
+              echo "Removing exact legacy Worker route $host/* from $script; the custom domain will own this hostname."
+              deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/workers/routes/$route_id" "${auth[@]}")"
+              jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
+            done < <(jq -r --arg host "$host" '.result[]? | select(.pattern==($host+"/*") and .script=="testagram-cdn") | [.script,.id] | @tsv' <<<"$routes")
+
+            if [[ -z "$owner" ]]; then
+              cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$ZONE_ID/dns_records?type=CNAME&name=$host&per_page=100" "${auth[@]}")"
+              while IFS=$'\t' read -r id; do
+                [[ -n "$id" ]] || continue
+                echo "Removing stale exact CNAME for $host so Wrangler can create its Worker custom domain."
+                deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/dns_records/$id" "${auth[@]}")"
+                jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
+              done < <(jq -r '.result[]? | .id' <<<"$cnames")
+            fi
+          done
 
       - name: Deploy Worker gateway on canonical API and media hostnames
         uses: cloudflare/wrangler-action@v3
