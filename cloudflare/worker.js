@@ -138,7 +138,29 @@ export default {
 
     try {
       const upstreamRequest = new Request(target.toString(), init);
-      return await fetch(upstreamRequest);
+      const upstreamResponse = await fetch(upstreamRequest);
+      const location = upstreamResponse.headers.get("location");
+      if (location && upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+        try {
+          const redirect = new URL(location, origin);
+          if (redirect.origin === origin.origin) {
+            // Keep same-origin redirects on the canonical public hostname;
+            // never send clients to an InstaBox port URL.
+            redirect.protocol = incoming.protocol;
+            redirect.host = incoming.host;
+            const responseHeaders = new Headers(upstreamResponse.headers);
+            responseHeaders.set("location", redirect.toString());
+            return new Response(upstreamResponse.body, {
+              status: upstreamResponse.status,
+              statusText: upstreamResponse.statusText,
+              headers: responseHeaders,
+            });
+          }
+        } catch {
+          // Preserve the upstream response if its Location is not a valid URL.
+        }
+      }
+      return upstreamResponse;
     } catch {
       return json({ ok: false, error: "upstream_unavailable" }, 502);
     }
