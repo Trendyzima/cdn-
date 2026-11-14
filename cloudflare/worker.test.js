@@ -80,6 +80,22 @@ test("public API hides readiness and metrics while preserving liveness", async (
   assert.equal(fetches, 0);
 });
 
+test("media gateway hides metrics while preserving CDN readiness", async (t) => {
+  restoreFetch(t);
+  let fetches = 0;
+  globalThis.fetch = async (request) => {
+    fetches += 1;
+    assert.equal(new URL(request.url).pathname, "/readyz");
+    return new Response("ready");
+  };
+  const metrics = await worker.fetch(new Request("https://media.testagram.site/metrics"), env());
+  const ready = await worker.fetch(new Request("https://media.testagram.site/readyz"), env());
+  assert.equal(metrics.status, 404);
+  assert.equal(ready.status, 200);
+  assert.equal(await ready.text(), "ready");
+  assert.equal(fetches, 1);
+});
+
 test("replaces spoofed forwarding metadata and strips hop-by-hop headers", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -108,7 +124,8 @@ test("replaces spoofed forwarding metadata and strips hop-by-hop headers", async
   assert.equal(upstream.headers.get("x-forwarded-for"), "203.0.113.17");
   assert.equal(upstream.headers.get("x-forwarded-host"), "api.testagram.site");
   assert.equal(upstream.headers.get("x-forwarded-proto"), "https");
-  for (const name of ["x-forwarded-port", "x-real-ip", "forwarded", "connection", "keep-alive", "x-tenant-override", "cf-connecting-ip"]) {
+  assert.equal(upstream.headers.get("x-real-ip"), "203.0.113.17");
+  for (const name of ["x-forwarded-port", "forwarded", "connection", "keep-alive", "x-tenant-override", "cf-connecting-ip"]) {
     assert.equal(upstream.headers.get(name), null, `${name} must not reach the Backend`);
   }
 });
@@ -208,6 +225,23 @@ test("preserves WebSocket upgrade semantics when proxying", async (t) => {
   assert.equal(response.status, 200);
   assert.equal(upstream.headers.get("connection"), "Upgrade");
   assert.equal(upstream.headers.get("upgrade"), "websocket");
+});
+
+test("protocol-relative paths cannot escape the configured origin", async (t) => {
+  restoreFetch(t);
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = request;
+    return new Response("ok");
+  };
+  const response = await worker.fetch(
+    new Request("https://media.testagram.site//attacker.example/asset?x=1"),
+    env(),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(new URL(upstream.url).origin, cdnOrigin);
+  assert.equal(new URL(upstream.url).pathname, "//attacker.example/asset");
+  assert.equal(new URL(upstream.url).search, "?x=1");
 });
 
 test("returns 502 on upstream transport failure", async (t) => {
