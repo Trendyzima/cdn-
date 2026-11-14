@@ -1,57 +1,18 @@
-name: Deploy private R2 media Worker
+name: Deprecated R2 media Worker deployment (disabled)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "cloudflare/**"
-      - ".github/workflows/deploy-private-r2-worker.yml"
 
 permissions:
   contents: read
 
-concurrency:
-  group: testagram-private-r2-worker-production
-  cancel-in-progress: false
-
 jobs:
-  verify-and-deploy:
+  retired:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Validate required deployment secrets
+      - name: Explain the retired deployment path
         shell: bash
-        env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          ASSERTION_SECRET: ${{ secrets.CDN_MEDIA_ASSERTION_SECRET }}
         run: |
-          set -euo pipefail
-          test -n "$CF_API_TOKEN" || { echo "Missing CLOUDFLARE_API_TOKEN"; exit 1; }
-          test -n "$CF_ACCOUNT_ID" || { echo "Missing CLOUDFLARE_ACCOUNT_ID"; exit 1; }
-          test "${#ASSERTION_SECRET}" -ge 32 || { echo "CDN_MEDIA_ASSERTION_SECRET must be at least 32 characters"; exit 1; }
-
-      - name: Test Worker contract
-        working-directory: cloudflare
-        run: npm test
-
-      - name: Deploy only the Backend-asserted private user-media route
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare
-          command: deploy --config wrangler.toml
-          secrets: |
-            CDN_MEDIA_ASSERTION_SECRET
-        env:
-          CDN_MEDIA_ASSERTION_SECRET: ${{ secrets.CDN_MEDIA_ASSERTION_SECRET }}
+          echo "::error::The R2 Worker is no longer the canonical media origin and this deployment is intentionally disabled."
+          echo "Use the 'Restore canonical Testagram API and Go CDN host routing' workflow with the verified InstaBox port 8080 and 8081 HTTPS origins."
+          exit 1
