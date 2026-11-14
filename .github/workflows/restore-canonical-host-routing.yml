@@ -1,0 +1,233 @@
+name: Restore canonical Testagram API and Go CDN host routing
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_origin:
+        description: "Verified public InstaBox HTTPS URL for the Backend port 8080 (no path)"
+        required: true
+        type: string
+      cdn_origin:
+        description: "Verified public InstaBox HTTPS URL for the Go CDN port 8081 (no path)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testagram-canonical-host-routing
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Deploy canonical API and Go CDN gateway
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      API_ORIGIN: ${{ inputs.api_origin }}
+      CDN_ORIGIN: ${{ inputs.cdn_origin }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate origins and prove both upstream services before cutover
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CF_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN."; exit 1; }
+          test -n "$CF_ACCOUNT_ID" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID."; exit 1; }
+          python3 - "$API_ORIGIN" "$CDN_ORIGIN" <<'PY'
+          import ipaddress, sys
+          from urllib.parse import urlparse
+          for label, raw, canonical in (
+              ("API_ORIGIN", sys.argv[1], "api.testagram.site"),
+              ("CDN_ORIGIN", sys.argv[2], "media.testagram.site"),
+          ):
+              u = urlparse(raw)
+              if (u.scheme != "https" or not u.hostname or u.username or u.password
+                  or u.path not in ("", "/") or u.query or u.fragment or u.port
+                  or u.hostname == canonical or u.hostname == "testagram.site"
+                  or u.hostname.endswith(".testagram.site")
+                  or u.hostname == "api.instabox.sh"
+                  or u.hostname == "localhost"
+                  or u.hostname.endswith((".local", ".internal", ".example", ".invalid", ".test", ".onion",
+                                           ".workers.dev", ".pages.dev", ".cloudflare.com", ".cloudflare.net"))):
+                  raise SystemExit(f"{label} must be a plain HTTPS origin on a separate public hostname")
+              try:
+                  ipaddress.ip_address(u.hostname)
+              except ValueError:
+                  pass
+              else:
+                  raise SystemExit(f"{label} must use the InstaBox public hostname, not a literal IP")
+          if urlparse(sys.argv[1]).hostname == urlparse(sys.argv[2]).hostname:
+              raise SystemExit("API_ORIGIN and CDN_ORIGIN must be different published port hostnames")
+          PY
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          api_status="$(curl -sS --connect-timeout 5 --max-time 15 -D "$tmp/api.headers" -o "$tmp/api.json" -w '%{http_code}' "$API_ORIGIN/healthz" || true)"
+          if [[ "$api_status" != "200" ]] ||
+             ! grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" ||
+             ! jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null; then
+            echo "::error::API_ORIGIN is not serving the expected Testagram Backend health identity (HTTP $api_status)."
+            cat "$tmp/api.headers" "$tmp/api.json" 2>/dev/null || true
+            exit 1
+          fi
+          curl -fsS --connect-timeout 5 --max-time 15 "$API_ORIGIN/readyz" >/dev/null
+
+          cdn_status="$(curl -sS --connect-timeout 5 --max-time 15 -D "$tmp/cdn.headers" -o "$tmp/cdn.json" -w '%{http_code}' "$CDN_ORIGIN/healthz" || true)"
+          ready_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/cdn.ready" -w '%{http_code}' "$CDN_ORIGIN/readyz" || true)"
+          if [[ "$cdn_status" != "200" || "$ready_status" != "200" ]] ||
+             ! grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/cdn.headers" ||
+             ! grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' "$tmp/cdn.headers" ||
+             ! jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/cdn.json" >/dev/null ||
+             ! grep -qx 'ready' "$tmp/cdn.ready"; then
+            echo "::error::CDN_ORIGIN is not serving the pinned, ready Go CDN (health=$cdn_status readiness=$ready_status)."
+            cat "$tmp/cdn.headers" "$tmp/cdn.json" "$tmp/cdn.ready" 2>/dev/null || true
+            exit 1
+          fi
+          private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "$CDN_ORIGIN/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
+          case "$private_status" in
+            401|403|404) ;;
+            *) echo "::error::Go CDN origin did not deny unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;;
+          esac
+          echo "Both origins identify the correct services; CDN readiness and private-media denial passed."
+
+      - name: Preflight Cloudflare zone and existing hostname ownership
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zones="$(curl --retry 2 --retry-all-errors -fsS "$API/zones?name=testagram.site&status=active" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | length == 1)' <<<"$zones" >/dev/null || {
+            echo "::error::Could not identify exactly one active testagram.site zone; verify Zone Read."
+            jq -c '.errors // []' <<<"$zones"; exit 1;
+          }
+          zone_id="$(jq -r '.result[0].id' <<<"$zones")"
+          echo "zone_id=$zone_id" >> "$GITHUB_OUTPUT"
+
+          domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$domains" >/dev/null || {
+            echo "::error::Cannot inspect all Worker custom domains; verify Workers Scripts Read/Write and review pagination."
+            jq -c '.errors // []' <<<"$domains"; exit 1;
+          }
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$routes" >/dev/null || {
+            echo "::error::Cannot inspect all Worker routes; verify Zone Workers Routes Read/Write and review pagination."
+            jq -c '.errors // []' <<<"$routes"; exit 1;
+          }
+          broad="$(jq -r '.result[]? | select(.pattern=="*.testagram.site/*" or .pattern=="testagram.site/*") | .pattern' <<<"$routes")"
+          if [[ -n "$broad" ]]; then
+            echo "::error::A broad zone-wide Worker route could affect unrelated Testagram services. Review it manually before cutover:"
+            printf '%s\n' "$broad"; exit 1;
+          fi
+
+          for host in api.testagram.site media.testagram.site; do
+            owners="$(jq -r --arg host "$host" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | [.service,(.environment // "production")] | @tsv' <<<"$domains")"
+            while IFS=$'\t' read -r service environment; do
+              [[ -n "$service" ]] || continue
+              if [[ "$service" != "testagram-cdn" || ( "$environment" != "production" && "$environment" != "" ) ]]; then
+                echo "::error::Refusing to replace $host because it is attached to unexpected Worker service/environment: $service/$environment."
+                exit 1
+              fi
+            done <<<"$owners"
+
+            exact_routes="$(jq -r --arg host "$host" '.result[]? | select(.pattern==($host+"/*")) | [.script,.id] | @tsv' <<<"$routes")"
+            while IFS=$'\t' read -r script route_id; do
+              [[ -n "$route_id" ]] || continue
+              if [[ "$script" != "testagram-cdn" ]]; then
+                echo "::error::Refusing to replace $host because exact Worker route belongs to $script."
+                exit 1
+              fi
+            done <<<"$exact_routes"
+
+            cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?type=CNAME&name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$cnames" >/dev/null || {
+              echo "::error::Cannot inspect exact CNAME records for $host; verify Zone DNS Read/Write."
+              jq -c '.errors // []' <<<"$cnames"; exit 1;
+            }
+          done
+          echo "Cloudflare zone, exact Worker ownership/routes, and DNS records passed preflight."
+
+      - name: Test canonical gateway contract
+        working-directory: cloudflare
+        run: npm test
+
+      - name: Remove only conflicting exact routes and stale CNAME records
+        shell: bash
+        env:
+          ZONE_ID: ${{ steps.preflight.outputs.zone_id }}
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          auth=(-H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json")
+          domains="$(curl -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" "${auth[@]}")"
+          routes="$(curl -fsS "$API/zones/$ZONE_ID/workers/routes?per_page=100&page=1" "${auth[@]}")"
+
+          for host in api.testagram.site media.testagram.site; do
+            owner="$(jq -r --arg host "$host" --arg zone "$ZONE_ID" '.result[]? | select(.hostname==$host and .zone_id==$zone) | .service' <<<"$domains" | head -n 1)"
+            while IFS=$'\t' read -r script route_id; do
+              [[ -n "$route_id" ]] || continue
+              echo "Removing exact legacy Worker route $host/* from $script; the custom domain will own this hostname."
+              deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/workers/routes/$route_id" "${auth[@]}")"
+              jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
+            done < <(jq -r --arg host "$host" '.result[]? | select(.pattern==($host+"/*") and .script=="testagram-cdn") | [.script,.id] | @tsv' <<<"$routes")
+
+            if [[ -z "$owner" ]]; then
+              cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$ZONE_ID/dns_records?type=CNAME&name=$host&per_page=100" "${auth[@]}")"
+              while IFS=$'\t' read -r id; do
+                [[ -n "$id" ]] || continue
+                echo "Removing stale exact CNAME for $host so Wrangler can create its Worker custom domain."
+                deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/dns_records/$id" "${auth[@]}")"
+                jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
+              done < <(jq -r '.result[]? | .id' <<<"$cnames")
+            fi
+          done
+
+      - name: Deploy Worker gateway on canonical API and media hostnames
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}"
+
+      - name: Verify canonical public API and Go CDN identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          for attempt in $(seq 1 30); do
+            api_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/api.headers" -o "$tmp/api.json" -w '%{http_code}' "https://api.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            api_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
+            api_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            media_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/media.headers" -o "$tmp/media.json" -w '%{http_code}' "https://media.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            media_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/media.ready" -w '%{http_code}' "https://media.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
+            if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" ]] &&
+               grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" &&
+               jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
+               [[ "$media_status" == "200" && "$media_ready" == "200" ]] &&
+               grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/media.headers" &&
+               grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' "$tmp/media.headers" &&
+               jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null &&
+               grep -qx 'ready' "$tmp/media.ready"; then
+              private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
+              case "$private_status" in 401|403|404) ;; *) echo "::error::Canonical CDN allowed unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;; esac
+              echo "api.testagram.site identifies the Backend; media.testagram.site identifies the pinned Go CDN. Readiness, private metrics, and private-media boundaries passed."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics CDN=$media_status CDN_READY=$media_ready."
+          cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" "$tmp/media.ready" 2>/dev/null || true
+          exit 1

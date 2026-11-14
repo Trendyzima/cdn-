@@ -132,10 +132,28 @@ private viewer-authorized streaming, HLS/DASH byte delivery, range requests,
 cache, shields and configured trusted origins.
 
 Cloudflare provides authoritative DNS and private R2 object storage. The
-Cloudflare R2 Worker under `cloudflare/` is currently deployed only as an
-unrouted script (`workers_dev = false`); it has no custom-domain route and
-must not intercept `media.testagram.site`. A separate hostname and reviewed
-Backend/API contract are required before Worker activation. The Go edge container is published under its immutable source SHA and has a build-provenance attestation; deployments must pin the published image digest, never a mutable `latest` tag. Data Centre issue #53 tracks the canonical deployment controller and promotion/rollback workflow.
+Cloudflare Worker under `cloudflare/` is a hostname gateway only;
+it is not a storage or authorization authority. The canonical API and media
+hostnames are bound to this gateway, which forwards requests to the independently
+verified InstaBox HTTPS port origins. The media origin must identify the
+immutable Go CDN release; the gateway preserves its service/version headers,
+viewer Authorization, Range requests, cache policy and response body. It does
+not read from R2 or mint media assertions.
+
+The `Restore canonical Testagram API and Go CDN host routing` workflow is the
+controlled production cutover. Supply the HTTPS URL returned by InstaBox for
+Backend port 8080 and Go CDN port 8081. It verifies both origins before
+deployment, checks that any existing custom-domain owner is this exact Worker,
+deploys the gateway to `api.testagram.site` and `media.testagram.site`, then
+checks public service identity, private API readiness/metrics, CDN readiness
+and private-media denial. It does not require a public VPS IPv4 or change DNS
+records manually. The Cloudflare token needs Account Workers Scripts Read/Write and
+Zone Read, DNS Read/Write, and Workers Routes Read/Write for `testagram.site`
+so the workflow can inspect and safely reconcile legacy hostname bindings.
+
+The former `deploy-private-r2-worker.yml` workflow is validation-only now. It
+cannot deploy a Worker without verified API/CDN origins. The canonical host
+gateway workflow above is the sole production Worker deployment path.
 
 Backend is the authority for identity, media ownership, visibility and
 viewer authorization. Appwrite is used for identity/session verification;

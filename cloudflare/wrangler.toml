@@ -1,16 +1,18 @@
 name = "testagram-cdn"
 main = "worker.js"
-compatibility_date = "2026-10-08"
+compatibility_date = "2026-11-15"
 workers_dev = false
 preview_urls = false
 
-# Deliberately no custom-domain routes. The Go CDN owns media.testagram.site.
-# Deploying this script does not activate it on a public hostname. A separate
-# hostname, API contract and security review are required before adding routes.
+# These custom domains are the public gateway only. API_ORIGIN and CDN_ORIGIN
+# are the verified, per-machine InstaBox HTTPS port URLs supplied at release.
+[[routes]]
+pattern = "api.testagram.site"
+custom_domain = true
 
-[[r2_buckets]]
-binding = "MEDIA_BUCKET"
-bucket_name = "testagram-media"
+[[routes]]
+pattern = "media.testagram.site"
+custom_domain = true
 
 [observability]
 enabled = true
