@@ -88,7 +88,9 @@ export default {
       return json({ ok: false, error: error.message }, 503);
     }
 
-    const target = new URL(incoming.pathname + incoming.search, origin);
+    const target = new URL(origin.toString());
+    target.pathname = incoming.pathname;
+    target.search = incoming.search;
     const headers = new Headers(request.headers);
     const isWebSocket = request.headers.get("upgrade")?.toLowerCase() === "websocket";
 
@@ -128,7 +130,10 @@ export default {
     headers.set("x-forwarded-host", incoming.hostname);
     headers.set("x-forwarded-proto", "https");
     const clientIP = request.headers.get("cf-connecting-ip");
-    if (clientIP) headers.set("x-forwarded-for", clientIP);
+    if (clientIP) {
+      headers.set("x-forwarded-for", clientIP);
+      headers.set("x-real-ip", clientIP);
+    }
 
     const init = {
       method: request.method,
