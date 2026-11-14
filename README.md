@@ -137,6 +137,18 @@ unrouted script (`workers_dev = false`); it has no custom-domain route and
 must not intercept `media.testagram.site`. A separate hostname and reviewed
 Backend/API contract are required before Worker activation. The Go edge container is published under its immutable source SHA and has a build-provenance attestation; deployments must pin the published image digest, never a mutable `latest` tag. Data Centre issue #53 tracks the canonical deployment controller and promotion/rollback workflow.
 
+The `Restore canonical Testagram API and Go CDN host routing` workflow is the
+controlled production cutover for `api.testagram.site` and
+`media.testagram.site`. It detaches only Worker custom domains/exact Worker
+routes for those two hosts, replaces their A/AAAA/CNAME records with proxied A
+records to the InstaBox VPS Caddy origin, then verifies the Backend health
+identity, Go CDN version/readiness, and private-media denial. Supply the VPS
+public IPv4 through the workflow input or the `TESTAGRAM_PUBLIC_ORIGIN_IP`
+repository variable. The Cloudflare token needs Account Workers Scripts
+Read/Write and Zone Read, DNS Read/Write, and Workers Routes Read/Write. The
+workflow refuses broad zone-wide Worker routes and performs no mutation when
+preflight or origin validation fails.
+
 Backend is the authority for identity, media ownership, visibility and
 viewer authorization. Appwrite is used for identity/session verification;
 there is no Supabase runtime identity dependency. Data Centre owns storage
