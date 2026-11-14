@@ -41,6 +41,15 @@ function configuredOrigin(raw, publicHost) {
     /^\d{1,3}(?:\.\d{1,3}){3}$/.test(origin.hostname) ||
     origin.hostname.endsWith(".local") ||
     origin.hostname.endsWith(".internal") ||
+    origin.hostname.endsWith(".example") ||
+    origin.hostname.endsWith(".invalid") ||
+    origin.hostname.endsWith(".test") ||
+    origin.hostname.endsWith(".onion") ||
+    origin.hostname.endsWith(".workers.dev") ||
+    origin.hostname.endsWith(".pages.dev") ||
+    origin.hostname.endsWith(".cloudflare.com") ||
+    origin.hostname.endsWith(".cloudflare.net") ||
+    origin.hostname === "api.instabox.sh" ||
     !origin.hostname.includes(".")
   ) {
     throw new Error("origin_unsafe");
@@ -77,7 +86,41 @@ export default {
 
     const target = new URL(incoming.pathname + incoming.search, origin);
     const headers = new Headers(request.headers);
-    headers.delete("host");
+    const isWebSocket = request.headers.get("upgrade")?.toLowerCase() === "websocket";
+
+    // Never trust client-supplied forwarding metadata or hop-by-hop headers.
+    // Cloudflare's connecting IP is the only source used for X-Forwarded-For.
+    const connectionTokens = (headers.get("connection") || "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    for (const name of connectionTokens) headers.delete(name);
+    for (const name of [
+      "host",
+      "connection",
+      "keep-alive",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "proxy-connection",
+      "te",
+      "trailer",
+      "transfer-encoding",
+      "forwarded",
+      "x-forwarded-for",
+      "x-forwarded-host",
+      "x-forwarded-proto",
+      "x-forwarded-port",
+      "x-real-ip",
+      "cf-connecting-ip",
+    ]) {
+      headers.delete(name);
+    }
+    if (isWebSocket) {
+      headers.set("connection", "Upgrade");
+      headers.set("upgrade", "websocket");
+    } else {
+      headers.delete("upgrade");
+    }
     headers.set("x-forwarded-host", incoming.hostname);
     headers.set("x-forwarded-proto", "https");
     const clientIP = request.headers.get("cf-connecting-ip");
