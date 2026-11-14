@@ -151,6 +151,10 @@ records manually. The Cloudflare token needs Account Workers Scripts Read/Write 
 Zone Read, DNS Read/Write, and Workers Routes Read/Write for `testagram.site`
 so the workflow can inspect and safely reconcile legacy hostname bindings.
 
+The former `deploy-private-r2-worker.yml` workflow is validation-only now. It
+cannot deploy a Worker without verified API/CDN origins. The canonical host
+gateway workflow above is the sole production Worker deployment path.
+
 Backend is the authority for identity, media ownership, visibility and
 viewer authorization. Appwrite is used for identity/session verification;
 there is no Supabase runtime identity dependency. Data Centre owns storage
