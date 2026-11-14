@@ -37,6 +37,8 @@ function configuredOrigin(raw, publicHost) {
     origin.hostname === "testagram.site" ||
     origin.hostname.endsWith(".testagram.site") ||
     origin.hostname === "localhost" ||
+    origin.hostname.includes(":") ||
+    /^\\d{1,3}(?:\\.\\d{1,3}){3}$/.test(origin.hostname) ||
     origin.hostname.endsWith(".local") ||
     origin.hostname.endsWith(".internal") ||
     !origin.hostname.includes(".")
@@ -48,7 +50,7 @@ function configuredOrigin(raw, publicHost) {
 
 export default {
   async fetch(request, env) {
-    if (request.method === "TRACE" || request.method === "CONNECT") {
+    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"].includes(request.method)) {
       return new Response("Method Not Allowed", {
         status: 405,
         headers: { allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS" },
@@ -88,6 +90,7 @@ export default {
     };
     if (request.method !== "GET" && request.method !== "HEAD") {
       init.body = request.body;
+      init.duplex = "half";
     }
 
     try {
