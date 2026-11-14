@@ -126,7 +126,14 @@ export default {
     headers.set("x-forwarded-host", incoming.hostname);
     headers.set("x-forwarded-proto", "https");
     const clientIP = request.headers.get("cf-connecting-ip");
-    if (clientIP) headers.set("x-forwarded-for", clientIP);
+    if (clientIP) {
+      headers.set("x-forwarded-for", clientIP);
+      headers.set("x-real-ip", clientIP);
+    } else {
+      headers.delete("x-forwarded-for");
+      headers.delete("x-real-ip");
+    }
+    headers.delete("forwarded");
 
     const init = {
       method: request.method,
