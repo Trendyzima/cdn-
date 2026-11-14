@@ -3,6 +3,7 @@ const HOSTS = Object.freeze({
   "media.testagram.site": "CDN_ORIGIN",
 });
 const PRIVATE_API_PATHS = new Set(["/readyz", "/metrics"]);
+const PRIVATE_MEDIA_PATHS = new Set(["/metrics"]);
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -70,7 +71,10 @@ export default {
     const variable = HOSTS[incoming.hostname.toLowerCase()];
     if (!variable) return json({ ok: false, error: "unknown_public_host" }, 421);
 
-    if (incoming.hostname === "api.testagram.site" && PRIVATE_API_PATHS.has(incoming.pathname)) {
+    const privatePath =
+      (incoming.hostname === "api.testagram.site" && PRIVATE_API_PATHS.has(incoming.pathname)) ||
+      (incoming.hostname === "media.testagram.site" && PRIVATE_MEDIA_PATHS.has(incoming.pathname));
+    if (privatePath) {
       return new Response("Not Found", {
         status: 404,
         headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
