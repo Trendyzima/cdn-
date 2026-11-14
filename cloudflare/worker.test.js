@@ -184,6 +184,32 @@ test("rejects unknown hostnames instead of acting as an open proxy", async (t) =
   assert.equal(fetches, 0);
 });
 
+test("rewrites same-origin redirects back to the canonical hostname", async (t) => {
+  restoreFetch(t);
+  globalThis.fetch = async () => new Response(null, {
+    status: 302,
+    headers: { location: `${apiOrigin}/auth/callback?next=%2Ffeed` },
+  });
+  const response = await worker.fetch(new Request("https://api.testagram.site/start"), env());
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "https://api.testagram.site/auth/callback?next=%2Ffeed");
+});
+
+test("preserves WebSocket upgrade semantics when proxying", async (t) => {
+  restoreFetch(t);
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = request;
+    return new Response("upgrade forwarded");
+  };
+  const response = await worker.fetch(new Request("https://api.testagram.site/socket", {
+    headers: { connection: "keep-alive, Upgrade", upgrade: "websocket" },
+  }), env());
+  assert.equal(response.status, 200);
+  assert.equal(upstream.headers.get("connection"), "Upgrade");
+  assert.equal(upstream.headers.get("upgrade"), "websocket");
+});
+
 test("returns 502 on upstream transport failure", async (t) => {
   restoreFetch(t);
   globalThis.fetch = async () => { throw new Error("network failure"); };
