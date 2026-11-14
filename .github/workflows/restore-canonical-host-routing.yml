@@ -211,12 +211,14 @@ jobs:
             api_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/api.headers" -o "$tmp/api.json" -w '%{http_code}' "https://api.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
             api_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
             api_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            tv_catalog_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/tv-catalog" -w '%{http_code}' "https://api.testagram.site/internal/tv/catalog?release_probe=$GITHUB_RUN_ID" || true)"
             media_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/media.headers" -o "$tmp/media.json" -w '%{http_code}' "https://media.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
             media_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/media.ready" -w '%{http_code}' "https://media.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
-            if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" ]] &&
+            media_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" && "$tv_catalog_status" == "401" ]] &&
                grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" &&
                jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
-               [[ "$media_status" == "200" && "$media_ready" == "200" ]] &&
+               [[ "$media_status" == "200" && "$media_ready" == "200" && "$media_metrics" == "404" ]] &&
                grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/media.headers" &&
                grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' "$tmp/media.headers" &&
                jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null &&
@@ -228,6 +230,6 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics CDN=$media_status CDN_READY=$media_ready."
+          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics."
           cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" "$tmp/media.ready" 2>/dev/null || true
           exit 1
