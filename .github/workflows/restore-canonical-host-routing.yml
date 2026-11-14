@@ -106,13 +106,13 @@ jobs:
             echo "::error::Could not identify exactly one active testagram.site zone; verify Zone Read."
             jq -c '.errors // []' <<<"$zones"; exit 1;
           }
-          domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?zone_name=testagram.site" -H "Authorization: Bearer $CF_API_TOKEN")"
-          jq -e '.success == true' <<<"$domains" >/dev/null || {
-            echo "::error::Cannot inspect Worker custom domains; verify Workers Scripts Read/Write."
+          domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$domains" >/dev/null || {
+            echo "::error::Cannot inspect all Worker custom domains; verify Workers Scripts Read/Write and review pagination."
             jq -c '.errors // []' <<<"$domains"; exit 1;
           }
           for host in api.testagram.site media.testagram.site; do
-            owners="$(jq -r --arg host "$host" '.result[]? | select(.hostname==$host) | .service' <<<"$domains")"
+            owners="$(jq -r --arg host "$host" '.result[]? | select(.hostname==$host and .zone_name=="testagram.site") | .service' <<<"$domains")"
             while IFS= read -r service; do
               [[ -n "$service" ]] || continue
               if [[ "$service" != "testagram-cdn" ]]; then
