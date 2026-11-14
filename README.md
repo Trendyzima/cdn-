@@ -13,7 +13,7 @@ Optional:
 Viewer <-> P2P peers
         -> HTTP edge fallback
 
-This is an engineering target, not an unmeasured capacity claim. Actual capacity is constrained by edge NIC bandwidth, upstream bandwidth, concurrent sockets, cache-hit ratio, segment bitrate/duration, CPU, memory and network path quality.
+This is an engineering target, not an unmeasured capacity claim. Actual capacity is constrained by edge NIC bandwidth, upstream bandwidth, concurrent sockets, cache-hit ratio, segment bitrate/duration, CPU, memory and network path quality. The existing one-million logical-viewer test is a single-process cache-coalescing regression test, not a real network throughput test. See [100k-viewer capacity qualification](docs/capacity-qualification.md) for the bandwidth model, N+1 sizing and required multi-region load evidence.
 
 For example, 100,000 viewers at an average 2 Mbps media bitrate represents about 200 Gbit/s of aggregate viewer egress. That cannot be supplied by one ordinary server. The target therefore requires multiple edge nodes/regions and measured bandwidth capacity.
 
