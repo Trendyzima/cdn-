@@ -1,0 +1,165 @@
+name: Restore canonical Testagram API and Go CDN host routing
+
+on:
+  workflow_dispatch:
+    inputs:
+      origin_ipv4:
+        description: "Public IPv4 address of the InstaBox VPS running Caddy (or set TESTAGRAM_PUBLIC_ORIGIN_IP repository variable)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testagram-canonical-host-routing
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Detach legacy Worker and restore VPS DNS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      INPUT_ORIGIN_IPV4: ${{ inputs.origin_ipv4 }}
+      TESTAGRAM_PUBLIC_ORIGIN_IP: ${{ vars.TESTAGRAM_PUBLIC_ORIGIN_IP }}
+    steps:
+      - name: Validate Cloudflare access and VPS origin
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CF_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN."; exit 1; }
+          test -n "$CF_ACCOUNT_ID" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID."; exit 1; }
+          ORIGIN_IPV4="$INPUT_ORIGIN_IPV4"
+          if [[ -z "$ORIGIN_IPV4" ]]; then ORIGIN_IPV4="$TESTAGRAM_PUBLIC_ORIGIN_IP"; fi
+          if [[ -z "$ORIGIN_IPV4" ]]; then
+            echo "::error::Provide the VPS public IPv4 as workflow input or set TESTAGRAM_PUBLIC_ORIGIN_IP. No DNS or Worker changes were made."
+            exit 1
+          fi
+          python3 - "$ORIGIN_IPV4" <<'PY'
+          import ipaddress, sys
+          address = ipaddress.ip_address(sys.argv[1])
+          if not isinstance(address, ipaddress.IPv4Address) or not address.is_global:
+              raise SystemExit("VPS origin must be a globally routable IPv4 address")
+          PY
+          echo "origin_ipv4=$ORIGIN_IPV4" >> "$GITHUB_OUTPUT"
+
+      - name: Preflight Cloudflare zone and required permissions
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zone="$(curl --retry 2 --retry-all-errors -fsS "$API/zones?name=testagram.site&status=active" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | length == 1)' <<<"$zone" >/dev/null || {
+            echo "::error::Could not identify exactly one active testagram.site zone; verify Zone Read."
+            jq -c '.errors // []' <<<"$zone"; exit 1;
+          }
+          zone_id="$(jq -r '.result[0].id' <<<"$zone")"
+          echo "zone_id=$zone_id" >> "$GITHUB_OUTPUT"
+          domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?zone_name=testagram.site" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true' <<<"$domains" >/dev/null || {
+            echo "::error::Cannot inspect Worker custom domains; verify Workers Scripts Read/Write."
+            jq -c '.errors // []' <<<"$domains"; exit 1;
+          }
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$routes" >/dev/null || {
+            echo "::error::Cannot inspect all Worker routes; verify Workers Routes Read/Write and inspect pagination."
+            jq -c '.errors // []' <<<"$routes"; exit 1;
+          }
+          broad="$(jq -r '.result[] | select(.pattern == "*.testagram.site/*" or .pattern == "testagram.site/*") | .pattern' <<<"$routes")"
+          if [[ -n "$broad" ]]; then
+            echo "::error::A broad zone Worker route could affect unrelated services. Review it manually before this targeted cutover:"
+            printf '%s\n' "$broad"; exit 1;
+          fi
+          for host in api.testagram.site media.testagram.site; do
+            records="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$records" >/dev/null || {
+              echo "::error::Cannot inspect DNS for $host; verify Zone DNS Read/Write."
+              jq -c '.errors // []' <<<"$records"; exit 1;
+            }
+          done
+          echo "Cloudflare zone, Worker bindings, and DNS permissions passed preflight."
+
+      - name: Detach exact legacy Worker custom domains and routes
+        shell: bash
+        env:
+          ZONE_ID: ${{ steps.preflight.outputs.zone_id }}
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          for host in api.testagram.site media.testagram.site; do
+            domains="$(curl -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?hostname=$host" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$domains" >/dev/null
+            while IFS=$'\t' read -r id service; do
+              [[ -n "$id" ]] || continue
+              echo "Detaching Worker custom domain $host from $service"
+              result="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$id" -H "Authorization: Bearer $CF_API_TOKEN")"
+              jq -e '.success == true' <<<"$result" >/dev/null || { jq -c '.errors // []' <<<"$result"; exit 1; }
+            done < <(jq -r --arg host "$host" '.result[] | select(.hostname==$host) | [.id,.service] | @tsv' <<<"$domains")
+          done
+          routes="$(curl -fsS "$API/zones/$ZONE_ID/workers/routes?per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          while IFS=$'\t' read -r id pattern; do
+            [[ -n "$id" ]] || continue
+            echo "Deleting exact Worker route $pattern"
+            result="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/workers/routes/$id" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$result" >/dev/null || { jq -c '.errors // []' <<<"$result"; exit 1; }
+          done < <(jq -r '.result[] | select(.pattern=="api.testagram.site/*" or .pattern=="media.testagram.site/*") | [.id,.pattern] | @tsv' <<<"$routes")
+
+      - name: Point API and media DNS to the canonical VPS Caddy origin
+        shell: bash
+        env:
+          ORIGIN_IPV4: ${{ steps.config.outputs.origin_ipv4 }}
+          ZONE_ID: ${{ steps.preflight.outputs.zone_id }}
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          for host in api.testagram.site media.testagram.site; do
+            records="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$ZONE_ID/dns_records?name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$records" >/dev/null
+            while IFS=$'\t' read -r id type; do
+              [[ -n "$id" ]] || continue
+              result="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/dns_records/$id" -H "Authorization: Bearer $CF_API_TOKEN")"
+              jq -e '.success == true' <<<"$result" >/dev/null || { echo "::error::Could not replace old $type record for $host"; jq -c '.errors // []' <<<"$result"; exit 1; }
+            done < <(jq -r '.result[] | select(.type=="A" or .type=="AAAA" or .type=="CNAME") | [.id,.type] | @tsv' <<<"$records")
+            payload="$(jq -nc --arg name "$host" --arg content "$ORIGIN_IPV4" '{type:"A",name:$name,content:$content,ttl:1,proxied:true,comment:"Testagram canonical Go services via InstaBox Caddy"}')"
+            created="$(curl --retry 2 --retry-all-errors -fsS -X POST "$API/zones/$ZONE_ID/dns_records" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "$payload")"
+            jq -e --arg ip "$ORIGIN_IPV4" '.success == true and .result.type == "A" and .result.content == $ip and .result.proxied == true' <<<"$created" >/dev/null || {
+              echo "::error::Cloudflare did not confirm the proxied A record for $host."
+              jq -c '.errors // []' <<<"$created"; exit 1;
+            }
+            echo "Configured proxied DNS for $host to the VPS Caddy origin."
+          done
+
+      - name: Verify public API and canonical Go CDN identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          for attempt in $(seq 1 30); do
+            api_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/api.headers" -o "$tmp/api.json" -w '%{http_code}' "https://api.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            media_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/media.headers" -o "$tmp/media.json" -w '%{http_code}' "https://media.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            ready_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/media-ready.body" -w '%{http_code}' "https://media.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
+            if [[ "$api_status" == "200" ]] &&
+               grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" &&
+               jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
+               [[ "$media_status" == "200" ]] &&
+               grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/media.headers" &&
+               grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' "$tmp/media.headers" &&
+               jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null &&
+               [[ "$ready_status" == "200" ]] && grep -qx 'ready' "$tmp/media-ready.body"; then
+              private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private.body" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
+              case "$private_status" in 401|403|404) ;; *) echo "::error::Unauthenticated private-media probe returned unsafe HTTP $private_status"; cat "$tmp/private.body"; exit 1 ;; esac
+              echo "Canonical API and Go CDN identities, CDN readiness, and private-media denial all passed."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Canonical API/CDN cutover did not converge. API=$api_status CDN=$media_status CDN_READY=$ready_status. Check Caddy, VPS origin reachability, DNS, and Cloudflare SSL mode."
+          cat "$tmp/api.json" "$tmp/media.json" "$tmp/media-ready.body" 2>/dev/null || true
+          exit 1
