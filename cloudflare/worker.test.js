@@ -210,6 +210,23 @@ test("preserves WebSocket upgrade semantics when proxying", async (t) => {
   assert.equal(upstream.headers.get("upgrade"), "websocket");
 });
 
+test("protocol-relative request paths cannot change the configured upstream host", async (t) => {
+  restoreFetch(t);
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = request;
+    return new Response("ok");
+  };
+  const response = await worker.fetch(
+    new Request("https://media.testagram.site//attacker.example/asset?x=1"),
+    env(),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(new URL(upstream.url).origin, cdnOrigin);
+  assert.equal(new URL(upstream.url).pathname, "//attacker.example/asset");
+  assert.equal(new URL(upstream.url).search, "?x=1");
+});
+
 test("returns 502 on upstream transport failure", async (t) => {
   restoreFetch(t);
   globalThis.fetch = async () => { throw new Error("network failure"); };
