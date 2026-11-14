@@ -143,13 +143,14 @@ not read from R2 or mint media assertions.
 The `Restore canonical Testagram API and Go CDN host routing` workflow is the
 controlled production cutover. Supply the HTTPS URL returned by InstaBox for
 Backend port 8080 and Go CDN port 8081. It verifies both origins before
-deployment, checks that any existing custom-domain owner is this exact Worker,
-deploys the gateway to `api.testagram.site` and `media.testagram.site`, then
-checks public service identity, private API readiness/metrics, CDN readiness
-and private-media denial. It does not require a public VPS IPv4 or change DNS
-records manually. The Cloudflare token needs Account Workers Scripts Read/Write and
-Zone Read, DNS Read/Write, and Workers Routes Read/Write for `testagram.site`
-so the workflow can inspect and safely reconcile legacy hostname bindings.
+deployment, checks exact Worker route/domain ownership and confirms that
+`api.testagram.site` has an existing proxied DNS record. The API hostname is
+attached through a Worker Route over that existing record; the media hostname
+keeps its existing `testagram-cdn` Custom Domain. No DNS records or unrelated
+Worker routes are deleted or replaced. The workflow then checks public service
+identity, private API readiness/metrics, CDN readiness and private-media denial.
+The Cloudflare token needs Account Workers Scripts Read/Write and Zone Read,
+DNS Read, and Workers Routes Read/Write for `testagram.site`.
 
 The former `deploy-private-r2-worker.yml` workflow is validation-only now. It
 cannot deploy a Worker without verified API/CDN origins. The canonical host
