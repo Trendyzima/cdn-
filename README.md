@@ -132,7 +132,7 @@ private viewer-authorized streaming, HLS/DASH byte delivery, range requests,
 cache, shields and configured trusted origins.
 
 Cloudflare provides authoritative DNS and private R2 object storage. The
-The Cloudflare Worker under `cloudflare/` is a hostname gateway only;
+Cloudflare Worker under `cloudflare/` is a hostname gateway only;
 it is not a storage or authorization authority. The canonical API and media
 hostnames are bound to this gateway, which forwards requests to the independently
 verified InstaBox HTTPS port origins. The media origin must identify the
@@ -147,9 +147,9 @@ deployment, checks that any existing custom-domain owner is this exact Worker,
 deploys the gateway to `api.testagram.site` and `media.testagram.site`, then
 checks public service identity, private API readiness/metrics, CDN readiness
 and private-media denial. It does not require a public VPS IPv4 or change DNS
-records manually. The Cloudflare token needs Account Workers Scripts Read/Write and Zone
-Read plus DNS Read/Write for `testagram.site` so Wrangler can reconcile
-custom-domain records.
+records manually. The Cloudflare token needs Account Workers Scripts Read/Write and
+Zone Read, DNS Read/Write, and Workers Routes Read/Write for `testagram.site`
+so the workflow can inspect and safely reconcile legacy hostname bindings.
 
 Backend is the authority for identity, media ownership, visibility and
 viewer authorization. Appwrite is used for identity/session verification;
