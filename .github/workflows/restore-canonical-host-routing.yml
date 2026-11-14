@@ -150,10 +150,10 @@ jobs:
               fi
             done <<<"$exact_routes"
 
-            records="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
-            jq -e '.success == true' <<<"$records" >/dev/null || {
-              echo "::error::Cannot inspect exact DNS records for $host; verify Zone DNS Read/Write."
-              jq -c '.errors // []' <<<"$records"; exit 1;
+            cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?type=CNAME&name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$cnames" >/dev/null || {
+              echo "::error::Cannot inspect exact CNAME records for $host; verify Zone DNS Read/Write."
+              jq -c '.errors // []' <<<"$cnames"; exit 1;
             }
           done
           echo "Cloudflare zone, exact Worker ownership/routes, and DNS records passed preflight."
@@ -183,16 +183,13 @@ jobs:
             done < <(jq -r --arg host "$host" '.result[]? | select(.pattern==($host+"/*") and .script=="testagram-cdn") | [.script,.id] | @tsv' <<<"$routes")
 
             if [[ -z "$owner" ]]; then
-              records="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$ZONE_ID/dns_records?name=$host&per_page=100" "${auth[@]}")"
-              while IFS=$'\t' read -r id type; do
+              cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$ZONE_ID/dns_records?type=CNAME&name=$host&per_page=100" "${auth[@]}")"
+              while IFS=$'\t' read -r id; do
                 [[ -n "$id" ]] || continue
-                case "$type" in A|AAAA|CNAME)
-                  echo "Removing stale exact $type record for $host so Wrangler can create its Worker custom domain."
-                  deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/dns_records/$id" "${auth[@]}")"
-                  jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
-                  ;;
-                esac
-              done < <(jq -r '.result[]? | [.id,.type] | @tsv' <<<"$records")
+                echo "Removing stale exact CNAME for $host so Wrangler can create its Worker custom domain."
+                deleted="$(curl --retry 2 --retry-all-errors -fsS -X DELETE "$API/zones/$ZONE_ID/dns_records/$id" "${auth[@]}")"
+                jq -e '.success == true' <<<"$deleted" >/dev/null || { jq -c '.errors // []' <<<"$deleted"; exit 1; }
+              done < <(jq -r '.result[]? | .id' <<<"$cnames")
             fi
           done
 
