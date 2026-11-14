@@ -111,6 +111,7 @@ jobs:
             echo "::error::Could not identify exactly one active testagram.site zone; verify Zone Read."
             jq -c '.errors // []' <<<"$zones"; exit 1;
           }
+          zone_id="$(jq -r '.result[0].id' <<<"$zones")"
           domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$domains" >/dev/null || {
             echo "::error::Cannot inspect all Worker custom domains; verify Workers Scripts Read/Write and review pagination."
@@ -125,6 +126,13 @@ jobs:
                 exit 1
               fi
             done <<<"$owners"
+            if [[ -z "$owners" ]]; then
+              cnames="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?type=CNAME&name=$host&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+              jq -e '.success == true and (.result | length == 0)' <<<"$cnames" >/dev/null || {
+                echo "::error::Cannot attach $host as a Worker custom domain while an existing CNAME record owns it. Review and remove only that exact CNAME, then retry."
+                jq -c '.errors // .result' <<<"$cnames"; exit 1;
+              }
+            fi
           done
           echo "Cloudflare zone and exact hostname ownership passed preflight."
 
