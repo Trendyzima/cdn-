@@ -30,7 +30,14 @@ test("canonical API hostname proxies to the verified Backend origin", async (t) 
   };
 
   const response = await worker.fetch(
-    new Request("https://api.testagram.site/healthz?probe=1"),
+    new Request("https://api.testagram.site/healthz?probe=1", {
+      headers: {
+        "cf-connecting-ip": "198.51.100.10",
+        "x-forwarded-for": "203.0.113.8",
+        "x-real-ip": "203.0.113.8",
+        forwarded: "for=203.0.113.8",
+      },
+    }),
     env(),
   );
   assert.equal(response.status, 200);
@@ -39,6 +46,9 @@ test("canonical API hostname proxies to the verified Backend origin", async (t) 
   assert.equal(new URL(upstream.url).search, "?probe=1");
   assert.equal(upstream.headers.get("x-forwarded-host"), "api.testagram.site");
   assert.equal(upstream.headers.get("x-forwarded-proto"), "https");
+  assert.equal(upstream.headers.get("x-forwarded-for"), "198.51.100.10");
+  assert.equal(upstream.headers.get("x-real-ip"), "198.51.100.10");
+  assert.equal(upstream.headers.get("forwarded"), null);
   assert.equal(response.headers.get("x-testagram-service"), "testagram-api");
   assert.deepEqual(await response.json(), { ok: true, service: "testagram-api" });
 });
