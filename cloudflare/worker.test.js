@@ -80,20 +80,18 @@ test("public API hides readiness and metrics while preserving liveness", async (
   assert.equal(fetches, 0);
 });
 
-test("media gateway hides metrics while preserving CDN readiness", async (t) => {
+test("public media gateway hides readiness and metrics", async (t) => {
   restoreFetch(t);
   let fetches = 0;
-  globalThis.fetch = async (request) => {
+  globalThis.fetch = async () => {
     fetches += 1;
-    assert.equal(new URL(request.url).pathname, "/readyz");
-    return new Response("ready");
+    return new Response("unexpected");
   };
-  const metrics = await worker.fetch(new Request("https://media.testagram.site/metrics"), env());
   const ready = await worker.fetch(new Request("https://media.testagram.site/readyz"), env());
+  const metrics = await worker.fetch(new Request("https://media.testagram.site/metrics"), env());
+  assert.equal(ready.status, 404);
   assert.equal(metrics.status, 404);
-  assert.equal(ready.status, 200);
-  assert.equal(await ready.text(), "ready");
-  assert.equal(fetches, 1);
+  assert.equal(fetches, 0);
 });
 
 test("replaces spoofed forwarding metadata and strips hop-by-hop headers", async (t) => {
