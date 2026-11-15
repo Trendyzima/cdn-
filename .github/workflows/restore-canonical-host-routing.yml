@@ -179,7 +179,34 @@ jobs:
         working-directory: cloudflare
         run: npm test
 
+      - name: Capture the active Cloudflare deployment for rollback
+        id: previous_deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          deployments="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments?per_page=100&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result.deployments | length >= 1)' <<<"$deployments" >/dev/null || {
+            echo "::error::Cannot capture the current Cloudflare Worker deployment; refusing a cutover without rollback."
+            jq -c '.errors // []' <<<"$deployments"
+            exit 1
+          }
+          versions="$(jq -c '.result.deployments[0].versions' <<<"$deployments")"
+          jq -e 'type == "array" and length > 0 and all(.[]; (.version_id | type == "string" and length > 0) and (.percentage | type == "number" and . > 0))' <<<"$versions" >/dev/null || {
+            echo "::error::The active Cloudflare deployment has no valid version split; refusing a cutover without rollback."
+            exit 1
+          }
+          jq -e '([.[].percentage] | add) == 100' <<<"$versions" >/dev/null || {
+            echo "::error::The active Cloudflare deployment does not route exactly 100 percent of traffic; refusing an unsafe rollback snapshot."
+            exit 1
+          }
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "Captured the active Cloudflare deployment version split for rollback."
+
       - name: Deploy Worker gateway on canonical API and media hostnames
+        id: deploy_gateway
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -188,6 +215,7 @@ jobs:
           command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}"
 
       - name: Verify canonical public API and Go CDN identities
+        id: verify_gateway
         shell: bash
         run: |
           set -euo pipefail
@@ -218,3 +246,39 @@ jobs:
           echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics."
           cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
           exit 1
+
+      - name: Automatically restore the previous Cloudflare deployment after failed smoke
+        if: failure() && steps.deploy_gateway.outcome == 'success' && steps.verify_gateway.outcome == 'failure'
+        env:
+          PREVIOUS_VERSIONS: ${{ steps.previous_deployment.outputs.versions }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          body="$(jq -nc --argjson versions "$PREVIOUS_VERSIONS" '{
+            strategy:"percentage",
+            versions:$versions,
+            annotations:{"workers/message":"Automatic rollback after Testagram canonical-host smoke failure"}
+          }')"
+          result="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body")"
+          jq -e '.success == true' <<<"$result" >/dev/null || {
+            echo "::error::Cloudflare rejected the automatic rollback."
+            jq -c '.errors // []' <<<"$result"
+            exit 1
+          }
+          active="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments?per_page=1&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          expected="$(jq -c 'sort_by(.version_id)' <<<"$PREVIOUS_VERSIONS")"
+          actual="$(jq -c '.result.deployments[0].versions | sort_by(.version_id)' <<<"$active")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Rollback request succeeded but the previous deployment split is not active."
+            echo "Expected previous deployment version split; active state differs (version IDs redacted)."
+            exit 1
+          fi
+          echo "Previous Cloudflare Worker deployment restored and verified."
+
