@@ -37,6 +37,32 @@ func TestHealth(t *testing.T){
  rr:=httptest.NewRecorder()
  s.health(rr,httptest.NewRequest("GET","/healthz",nil))
  if rr.Code!=200{t.Fatalf("health status %d",rr.Code)}
+ var body map[string]any
+ if err:=json.Unmarshal(rr.Body.Bytes(),&body);err!=nil{t.Fatalf("decode public health: %v",err)}
+ if body["ok"]!=true||body["service"]!="testagram-cdn"{t.Fatalf("unexpected public health identity: %#v",body)}
+ for _,key:=range []string{"node_id","cache_items","cache_bytes","inflight","tv_prefetch_hits"}{
+  if _,exists:=body[key];exists{t.Fatalf("public health leaked operational field %q",key)}
+ }
+}
+
+func TestPublicHandlerHidesReadinessAndMetrics(t *testing.T){
+ s:=New(testConfig(t))
+ for _,path:=range []string{"/readyz","/metrics"}{
+  rr:=httptest.NewRecorder()
+  s.Handler().ServeHTTP(rr,httptest.NewRequest(http.MethodGet,path,nil))
+  if rr.Code!=http.StatusNotFound{t.Fatalf("public %s status=%d, want 404",path,rr.Code)}
+ }
+}
+
+func TestInternalHandlerServesReadinessAndMetrics(t *testing.T){
+ s:=New(testConfig(t))
+ handler:=s.InternalHandler()
+ ready:=httptest.NewRecorder()
+ handler.ServeHTTP(ready,httptest.NewRequest(http.MethodGet,"/readyz",nil))
+ if ready.Code!=http.StatusOK||strings.TrimSpace(ready.Body.String())!="ready"{t.Fatalf("private readiness status=%d body=%q",ready.Code,ready.Body.String())}
+ metrics:=httptest.NewRecorder()
+ handler.ServeHTTP(metrics,httptest.NewRequest(http.MethodGet,"/metrics",nil))
+ if metrics.Code!=http.StatusOK||!strings.Contains(metrics.Body.String(),"testagram_edge_cache_hits_total"){t.Fatalf("private metrics status=%d body=%q",metrics.Code,metrics.Body.String())}
 }
 func testConfig(t *testing.T)config.Config{
  return config.Config{
