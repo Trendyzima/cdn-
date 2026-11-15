@@ -162,9 +162,53 @@ jobs:
 
           done
 
-          media_owner="$(jq -r --arg host "media.testagram.site" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | .service' <<<"$domains" | head -n 1)"
-          if [[ "$media_owner" != "testagram-cdn" ]]; then
-            echo "::error::media.testagram.site must remain attached to the existing testagram-cdn Worker Custom Domain; refusing to replace unexpected or missing ownership."
+          # Discover the current R2 custom-domain owner instead of assuming the
+          # hostname is already attached to the Worker.
+          buckets="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/r2/buckets?per_page=1000" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.cursor // "") == "")' <<<"$buckets" >/dev/null || {
+            echo "::error::Could not enumerate every R2 bucket; verify Workers R2 Storage Read/Write permissions and bucket pagination."
+            jq -c '.errors // []' <<<"$buckets"; exit 1;
+          }
+          r2_match_file="$(mktemp)"
+          trap 'rm -f "$r2_match_file"' EXIT
+          while IFS= read -r bucket; do
+            [[ -n "$bucket" ]] || continue
+            custom="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$bucket/domains/custom" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$custom" >/dev/null || {
+              echo "::error::Could not inspect R2 custom-domain ownership for a bucket; refusing cutover."
+              jq -c '.errors // []' <<<"$custom"; exit 1;
+            }
+            jq -c --arg bucket "$bucket" '.domains[]? | select(.domain=="media.testagram.site") | . + {bucket:$bucket}' <<<"$custom" >> "$r2_match_file"
+          done < <(jq -r '.result.buckets[]?.name' <<<"$buckets")
+          r2_count="$(wc -l < "$r2_match_file" | tr -d ' ')"
+          [[ "$r2_count" -le 1 ]] || {
+            echo "::error::media.testagram.site is attached to multiple R2 buckets; refusing ambiguous ownership transfer."
+            exit 1;
+          }
+          worker_domain="$(jq -c --arg host "media.testagram.site" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone)' <<<"$domains" | head -n 1)"
+          if [[ "$r2_count" == "1" ]]; then
+            r2_owner="$(cat "$r2_match_file")"
+            [[ "$(jq -r '.status.ownership // empty' <<<"$r2_owner")" == "active" && "$(jq -r '.status.ssl // empty' <<<"$r2_owner")" == "active" && "$(jq -r '.enabled // false' <<<"$r2_owner")" == "true" ]] || {
+              echo "::error::R2 custom domain ownership, TLS or enabled state is not healthy; refusing cutover."
+              exit 1;
+            }
+            [[ -z "$worker_domain" ]] || {
+              echo "::error::media.testagram.site is simultaneously listed as an R2 domain and Worker custom domain; refusing ambiguous ownership."
+              exit 1;
+            }
+            echo "r2_bucket=$(jq -r '.bucket' <<<"$r2_owner")" >> "$GITHUB_OUTPUT"
+            echo "r2_domain=$(jq -c '{domain,enabled,zoneId,ciphers,minTLS}' <<<"$r2_owner" | base64 -w0)" >> "$GITHUB_OUTPUT"
+            echo "media.testagram.site is currently owned by one active R2 bucket; a controlled Worker transfer is required."
+          elif [[ -n "$worker_domain" ]]; then
+            [[ "$(jq -r '.service' <<<"$worker_domain")" == "testagram-cdn" ]] || {
+              echo "::error::media.testagram.site is attached to an unexpected Worker; refusing cutover."
+              exit 1;
+            }
+            echo "r2_bucket=" >> "$GITHUB_OUTPUT"
+            echo "r2_domain=" >> "$GITHUB_OUTPUT"
+            echo "media.testagram.site is already attached to the canonical testagram-cdn Worker."
+          else
+            echo "::error::media.testagram.site has no verifiable R2 or canonical Worker owner; refusing to overwrite routing."
             exit 1
           fi
 
@@ -204,6 +248,30 @@ jobs:
           }
           echo "versions=$versions" >> "$GITHUB_OUTPUT"
           echo "Captured the active Cloudflare deployment version split for rollback."
+
+      - name: Release the existing R2 custom-domain binding for Go CDN ownership
+        id: detach_r2_domain
+        if: steps.preflight.outputs.r2_bucket != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          BUCKET="${{ steps.preflight.outputs.r2_bucket }}"
+          curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom/media.testagram.site" \
+            -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          for attempt in $(seq 1 30); do
+            state="$(curl --retry 2 --retry-all-errors -fsS \
+              "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+              -H "Authorization: Bearer $CF_API_TOKEN")"
+            if ! jq -e '.domains[]? | select(.domain=="media.testagram.site")' <<<"$state" >/dev/null; then
+              echo "R2 custom-domain binding released; bucket and objects remain untouched."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::R2 custom-domain binding did not detach; refusing Worker deployment."
+          exit 1
 
       - name: Deploy Worker gateway on canonical API and media hostnames
         id: deploy_gateway
@@ -281,4 +349,38 @@ jobs:
             exit 1
           fi
           echo "Previous Cloudflare Worker deployment restored and verified."
+
+      - name: Restore the previous R2 hostname owner if Go CDN cutover fails
+        if: failure() && steps.detach_r2_domain.outcome == 'success' && steps.verify_gateway.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          BUCKET="${{ steps.preflight.outputs.r2_bucket }}"
+          DOMAIN_JSON="$(echo '${{ steps.preflight.outputs.r2_domain }}' | base64 -d)"
+          workers="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          worker_id="$(jq -r '.result[]? | select(.hostname=="media.testagram.site" and .service=="testagram-cdn") | .id' <<<"$workers" | head -n 1)"
+          if [[ -n "$worker_id" ]]; then
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE \
+              "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$worker_id" \
+              -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          fi
+          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" -d "$DOMAIN_JSON")"
+          jq -e '.success == true' <<<"$restored" >/dev/null || {
+            echo "::error::Automatic Worker-to-R2 rollback failed. Restore media.testagram.site to bucket $BUCKET manually using the captured R2 domain settings."
+            jq -c '.errors // []' <<<"$restored"; exit 1;
+          }
+          verify="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom/media.testagram.site" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and .result.domain=="media.testagram.site" and .result.enabled==true' <<<"$verify" >/dev/null || {
+            echo "::error::R2 binding restore was accepted but could not be verified."
+            exit 1;
+          }
+          echo "Previous R2 hostname ownership restored and verified; no bucket objects were changed."
 
