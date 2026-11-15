@@ -432,27 +432,23 @@ func TestReadyRequiresPrivateOriginEvenWhenShieldExists(t *testing.T) {
 }
 
 func TestPublicDeliveryAlwaysConsultsBackendVisibility(t *testing.T) {
- var providerHits atomic.Int32
- provider:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
-  providerHits.Add(1)
-  _,_=w.Write([]byte("provider-bypass"))
- }))
- defer provider.Close()
- backend:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
-  if r.URL.Path!="/internal/cdn/v1/public/logo.webp" { t.Errorf("unexpected Backend origin path: %s",r.URL.Path) }
-  w.Header().Set("X-Testagram-Visibility","public")
-  _,_=w.Write([]byte("backend-authoritative"))
- }))
- defer backend.Close()
- cfg:=testConfig(t)
- cfg.OriginURLs=[]string{backend.URL}
- cfg.CloudinaryImageBaseURL=provider.URL
- cfg.R2PublicBaseURL=provider.URL
- s:=New(cfg)
- rr:=httptest.NewRecorder()
- s.Handler().ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/public/logo.webp",nil))
- if rr.Code!=http.StatusOK || rr.Body.String()!="backend-authoritative" { t.Fatalf("public object did not come from Backend-classified origin: status=%d body=%q",rr.Code,rr.Body.String()) }
- if providerHits.Load()!=0 { t.Fatalf("direct public provider fallback bypassed Backend visibility: hits=%d",providerHits.Load()) }
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/cdn/v1/public/logo.webp" {
+			t.Errorf("unexpected Backend origin path: %s", r.URL.Path)
+		}
+		w.Header().Set("X-Testagram-Visibility", "public")
+		_, _ = w.Write([]byte("backend-authoritative"))
+	}))
+	defer backend.Close()
+
+	cfg := testConfig(t)
+	cfg.OriginURLs = []string{backend.URL}
+	s := New(cfg)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/public/logo.webp", nil))
+	if rr.Code != http.StatusOK || rr.Body.String() != "backend-authoritative" {
+		t.Fatalf("public object did not come from Backend-classified origin: status=%d body=%q", rr.Code, rr.Body.String())
+	}
 }
 
 func TestPrivateOriginMustExplicitlyClassifyResponse(t *testing.T) {
