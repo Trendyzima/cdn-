@@ -1,68 +1,41 @@
-# Private R2 Worker release contract
+# Canonical Testagram API and Go CDN gateway
 
-## Runtime ownership
+## Production request ownership
 
-The Go CDN is the sole active media delivery plane for
-`https://media.testagram.site/*`. It owns public aliases, cache/shield/origin
-routing, byte ranges and the Backend-to-origin private authorization relay.
+The Cloudflare Worker `testagram-cdn` is the public hostname gateway for:
 
-This Cloudflare Worker is a separately deployable R2 adapter prototype. It is
-currently deployed as an unrouted Worker script with `workers_dev = false`.
-It has **no custom-domain route** and must not be attached to
-`media.testagram.site`. The Worker is not part of the active viewer request
-path until a distinct hostname, Backend contract, API service-registry entry,
-DNS/TLS ownership and rollout plan are approved.
+- `api.testagram.site/*` → the published HTTPS origin of the Testagram Backend on InstaBox port 8080.
+- `media.testagram.site/*` → the published HTTPS origin of the canonical Go CDN on InstaBox port 8081.
 
-## Ownership and credentials
+The Worker forwards requests and responses. It does not read R2 objects, authorize viewers, or make media visibility decisions.
 
-- Backend owns identity, media ownership, visibility, moderation and viewer
-  authorization.
-- Data Centre owns durable placement, replication, repair and deletion.
-- Go CDN delivers bytes and forwards private viewer assertions to the trusted
-  Backend origin. It does not make product visibility decisions.
-- The optional Worker verifies Backend-issued exact-object assertions before
-  reading the private R2 binding; it does not issue grants.
-- `MEDIA_BUCKET` binds the private `testagram-media` R2 bucket.
-- `CDN_MEDIA_ASSERTION_SECRET` is server-side only. It must never be placed in
-  Flutter, Android, browser bundles, Data Centre nodes, source control or logs.
-- `ORIGIN_AUTH_TOKEN` / Backend `CDN_ORIGIN_AUTH_TOKEN` is a separate
-  Go-CDN-to-Backend-origin service credential. Never reuse it as the assertion
-  signing key.
+The Go CDN is the only public media delivery plane. Backend owns media identity, visibility, moderation and viewer authorization. The CDN forwards private viewer assertions to the trusted Backend origin and delivers bytes only after Backend authorization. The R2 buckets remain storage origins and must not own the public `media.testagram.site` custom domain after cutover.
 
-The Worker deployment workflow publishes the script and secret only. It does
-not create DNS records or custom-domain routes. A successful script deployment
-does not mean R2 media is publicly reachable or production delivery is active.
+## Hostname ownership and cutover
 
-## Assertion contract
+The canonical-host workflow must:
 
-The Worker accepts only `Authorization: Bearer v1.<base64url-json>.<base64url-hmac>`
-assertions with:
-- issuer `testagram-backend` and audience `testagram-cdn`;
-- exact object key and canonical owner binding;
-- viewer subject, private visibility, issue/expiry timestamps and random JTI;
-- maximum five-minute lifetime;
-- valid HMAC-SHA256 signature.
+1. Validate both separate HTTPS upstream origins and their service identities before changing Cloudflare.
+2. Inspect the active `testagram.site` zone, exact Worker routes and custom-domain ownership.
+3. Discover whether `media.testagram.site` is currently attached directly to an R2 bucket or already attached to the `testagram-cdn` Worker.
+4. If R2 owns the hostname, capture the exact bucket and custom-domain settings, then detach only that hostname. It must not delete, copy, empty, or modify any bucket or object.
+5. Deploy the gateway Worker and verify the public API and Go CDN identities, private readiness/metrics isolation, and anonymous private-media denial.
+6. If public verification fails, restore the previous Worker deployment and, when the previous owner was R2, detach the failed Worker custom domain and reattach the captured R2 custom-domain settings. Verify the restored owner.
 
-Query-string tokens are rejected. Private responses are always
-`Cache-Control: private, no-store`. Missing/invalid assertions are rejected
-before R2 reads. GET, HEAD and a single byte range are supported.
+The Cloudflare API token needs Zone read, Worker Scripts read/write, Worker Routes read/write, and Workers R2 Storage read/write permissions for the controlled R2-to-Worker transfer. If any ownership cannot be enumerated or the token lacks permission, the workflow must stop before changing the hostname.
 
-## Release requirements before activation
+The R2 domain transfer affects routing only. It does not change bucket contents, object keys, credentials, lifecycle rules, or private-media authorization.
 
-1. Agree a distinct hostname that does not overlap the Go CDN hostname.
-2. Add the hostname and Worker contract to the shared API service registry and
-   Backend configuration; verify DNS, TLS and route ownership.
-3. Prove Backend emits the exact assertion format and that its owner/key claims
-   match the canonical media row.
-4. Test GET, HEAD, 206 ranges, expiry, wrong viewer, wrong owner, wrong key,
-   missing object, R2 outage and query-token rejection.
-5. Prove private no-store behavior and that no intermediary caches assertions
-   or private bytes.
-6. Deploy the Worker route only in a reviewed activation change and verify it
-   from an external network.
-7. Keep the Go CDN route unchanged and retain a tested rollback path.
+## Security boundaries
 
-The current production smoke workflow verifies the canonical Go CDN at
-`media.testagram.site`, not this unrouted Worker. TV/HLS playback grants are
-not implemented by this Worker and must use a separate Backend-authorized
-playback contract.
+- Public `/healthz` identifies the expected service.
+- `/readyz` and `/metrics` remain private and must return 404 through public hostnames.
+- Anonymous private-media requests must be denied (401, 403 or 404).
+- The Worker must reject unknown hostnames and unsafe upstream origins.
+- The Worker must not expose InstaBox control-plane URLs or internal listener ports in redirects.
+- The Go CDN origin credential, Backend viewer-assertion signing secret and CDN purge credential are separate server-side secrets. Never put them in Flutter, browser bundles, URLs, source control or logs.
+- Private media responses remain `Cache-Control: private, no-store`; the gateway must not cache viewer assertions or private bytes.
+
+## Release and rollback acceptance
+
+A successful Worker script upload alone is not a production release. Release acceptance requires external probes against both canonical hostnames and the exact service/version headers, plus verification that the media hostname is owned by the Go CDN gateway rather than an R2 bucket. The rollback path must be tested against the captured pre-cutover owner before the release is declared complete.
