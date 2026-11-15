@@ -2,14 +2,14 @@
 FROM scratch
 
 # Artifact extraction does not reliably preserve executable bits.
-
 COPY --chmod=0555 container/testagram-edge /testagram-edge
 COPY --chmod=0555 container/healthcheck /healthcheck
 COPY container/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --chown=65532:65532 container/cache/keep.txt /cache/.keep
 
 USER 65532:65532
-ENV LISTEN_ADDR=:8080\nENV INTERNAL_LISTEN_ADDR=:8082
+ENV LISTEN_ADDR=:8080
+ENV INTERNAL_LISTEN_ADDR=:8082
 ENV CACHE_DIR=/cache
 ENV HEALTHCHECK_URL=http://127.0.0.1:8082/readyz
 EXPOSE 8080 8082
