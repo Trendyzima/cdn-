@@ -148,7 +148,11 @@ deployment, checks exact Worker route/domain ownership and confirms that
 attached through a Worker Route over that existing record; the media hostname
 keeps its existing `testagram-cdn` Custom Domain. No DNS records or unrelated
 Worker routes are deleted or replaced. The workflow then checks public service
-identity, private API readiness/metrics, CDN readiness and private-media denial.
+identity and liveness, requires public /readyz and /metrics to return 404 on both
+origins and canonical hosts, and verifies private-media denial. Dependency-aware
+readiness is checked by the Backend and Go CDN Docker healthchecks on their
+unpublished private :8082 listeners; it must never be made public for this
+cutover.
 The Cloudflare token needs Account Workers Scripts Read/Write and Zone Read,
 DNS Read, and Workers Routes Read/Write for `testagram.site`.
 
