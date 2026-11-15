@@ -73,6 +73,29 @@ jobs:
           test "$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-ci)" = "healthy"
           docker exec testagram-edge-ci /healthcheck
           docker rm -f testagram-edge-ci
+      - name: Validate published Dockerfile image and healthcheck path
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile -t testagram-edge:published-ci .
+          docker volume create testagram-edge-cache-published-ci >/dev/null
+          cleanup() {
+            docker rm -f testagram-edge-published-ci >/dev/null 2>&1 || true
+            docker volume rm testagram-edge-cache-published-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name testagram-edge-published-ci --read-only --tmpfs /tmp \
+            -v testagram-edge-cache-published-ci:/app/cache \
+            -e ORIGIN_URL=http://127.0.0.1:1 \
+            -e ORIGIN_AUTH_TOKEN=ci-only-origin-token-not-for-production \
+            testagram-edge:published-ci
+          for attempt in $(seq 1 30); do
+            state="$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-published-ci)"
+            if [[ "$state" == "healthy" ]]; then break; fi
+            if [[ "$state" == "unhealthy" ]]; then docker logs testagram-edge-published-ci; exit 1; fi
+            sleep 2
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-published-ci)" = "healthy"
+          docker exec testagram-edge-published-ci /healthcheck
       - name: Upload container inputs
         uses: actions/upload-artifact@v4
         with:
