@@ -3,13 +3,14 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/testagram-edge ./cmd/edge
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/testagram-edge ./cmd/edge && \\
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/healthcheck ./cmd/healthcheck
 FROM alpine:3.20
 RUN addgroup -S edge && adduser -S -G edge edge
 WORKDIR /app
-COPY --from=build /out/testagram-edge /app/testagram-edge
+COPY --from=build /out/testagram-edge /app/testagram-edge\nCOPY --from=build /out/healthcheck /app/healthcheck
 RUN mkdir -p /app/cache && chown -R edge:edge /app
 USER edge
-ENV LISTEN_ADDR=:8080 CACHE_DIR=/app/cache
-EXPOSE 8080
+ENV LISTEN_ADDR=:8080 INTERNAL_LISTEN_ADDR=:8082 HEALTHCHECK_URL=http://127.0.0.1:8082/readyz CACHE_DIR=/app/cache
+EXPOSE 8080 8082\nHEALTHCHECK --interval=15s --timeout=5s --retries=6 --start-period=10s CMD ["/app/healthcheck"]
 ENTRYPOINT ["/app/testagram-edge"]
