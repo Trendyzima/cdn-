@@ -197,7 +197,7 @@ jobs:
               exit 1;
             }
             echo "r2_bucket=$(jq -r '.bucket' <<<"$r2_owner")" >> "$GITHUB_OUTPUT"
-            echo "r2_domain=$(jq -c '{domain,enabled,zoneId,ciphers,minTLS}' <<<"$r2_owner" | base64 -w0)" >> "$GITHUB_OUTPUT"
+            echo "r2_domain=$(jq -c '{domain,enabled,zoneId,ciphers,minTLS} | with_entries(select(.value != null))' <<<"$r2_owner" | base64 -w0)" >> "$GITHUB_OUTPUT"
             echo "media.testagram.site is currently owned by one active R2 bucket; a controlled Worker transfer is required."
           elif [[ -n "$worker_domain" ]]; then
             [[ "$(jq -r '.service' <<<"$worker_domain")" == "testagram-cdn" ]] || {
