@@ -337,15 +337,15 @@ func TestTVPrefetchMetricsAreExposed(t *testing.T) {
  s.tvPrefetchWarmedSeconds.Store(30)
 
  health := httptest.NewRecorder()
- s.health(health, httptest.NewRequest("GET", "/healthz", nil))
+ s.Handler().ServeHTTP(health, httptest.NewRequest("GET", "/healthz", nil))
  var payload map[string]any
  if err := json.Unmarshal(health.Body.Bytes(), &payload); err != nil { t.Fatalf("decode health payload: %v", err) }
- for _, key := range []string{"tv_prefetch_hits", "tv_prefetch_misses", "tv_prefetch_successes", "tv_prefetch_failures", "tv_prefetch_warmed_seconds"} {
-  if _, ok := payload[key]; !ok { t.Errorf("health response missing %q", key) }
+ if len(payload) != 2 || payload["ok"] != true || payload["service"] != "testagram-cdn" {
+  t.Fatalf("public health must expose only liveness identity, got %#v", payload)
  }
 
  metrics := httptest.NewRecorder()
- s.metrics(metrics, httptest.NewRequest("GET", "/metrics", nil))
+ s.InternalHandler().ServeHTTP(metrics, httptest.NewRequest("GET", "/metrics", nil))
  body := metrics.Body.String()
  for _, metric := range []string{
   "testagram_edge_tv_prefetch_cache_hits_total 2",
@@ -355,7 +355,7 @@ func TestTVPrefetchMetricsAreExposed(t *testing.T) {
   "testagram_edge_tv_prefetch_failures_total 1",
   "testagram_edge_tv_prefetch_warmed_seconds_total 30",
  } {
-  if !strings.Contains(body, metric) { t.Errorf("metrics response missing %q", metric) }
+  if !strings.Contains(body, metric) { t.Errorf("private metrics response missing %q", metric) }
  }
 }
 
