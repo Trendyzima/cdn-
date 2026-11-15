@@ -285,3 +285,12 @@ HLS requires segments referenced by a live playlist to remain available long eno
 
 
 **Security note:** legacy CDN-issued TV playback tokens are not an approved product authorization path; the `/v1/tv/*` route is disabled. Private media uses Backend-issued viewer assertions relayed to the trusted origin. See [docs/media-authorization.md](docs/media-authorization.md).
+
+
+## Private Backend origin network
+
+The production Compose service joins the externally managed `testagram-platform` Docker network and uses the canonical Backend internal listener. Deploy the Backend self-hosted stack first so it creates this network and publishes the `testagram-backend-api` alias. Set:
+
+`TESTAGRAM_BACKEND_INTERNAL_URL=http://testagram-backend-api:8082`
+
+The CDN remains the public media ingress behind Cloudflare. Joining the private network only enables its authenticated origin request to Backend; it does not change public DNS, Cloudflare routing or media authorization. The explicit Compose project name `testagram-cdn` lets the VPS watchdog start the existing edge stack without creating a duplicate project.
