@@ -99,8 +99,7 @@ jobs:
           if [[ "$cdn_status" != "200" || "$ready_status" != "404" || "$metrics_status" != "404" ]] ||
              ! grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/cdn.headers" ||
              ! grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' "$tmp/cdn.headers" ||
-             ! jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/cdn.json" >/dev/null ||
-             false; then
+             ! jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/cdn.json" >/dev/null; then
             echo "::error::CDN_ORIGIN is not serving the pinned Go CDN or exposes private readiness/metrics (health=$cdn_status readiness=$ready_status metrics=$metrics_status)."
             cat "$tmp/cdn.headers" "$tmp/cdn.json" 2>/dev/null || true
             exit 1
