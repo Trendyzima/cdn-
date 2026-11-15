@@ -39,5 +39,6 @@ jobs:
       - name: Explain canonical deployment owner
         run: |
           echo "Standalone source verification passed."
-          echo "This workflow verifies source only; production deployment ownership and automation are tracked in Data Centre issue #53."
+          echo "This workflow verifies source only; container-release.yml publishes pinned GHCR images."
+          echo "The Backend InstaBox deployment owns runtime rollout; restore-canonical-host-routing.yml owns the explicitly confirmed Cloudflare hostname gateway cutover."
           echo "No SSH host/user/key, GHCR token, Cloudflare token, or CDN deployment secret is requested here."
