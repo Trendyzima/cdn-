@@ -1,3 +1,4 @@
+name: testagram-cdn
 services:
   edge:
     build: .
