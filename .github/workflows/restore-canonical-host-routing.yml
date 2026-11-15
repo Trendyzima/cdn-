@@ -198,8 +198,7 @@ jobs:
             echo "::error::The active Cloudflare deployment has no valid version split; refusing a cutover without rollback."
             exit 1
           }
-          total="$(jq '[.[].percentage] | add' <<<"$versions")"
-          [[ "$total" == "100" ]] || {
+          jq -e '([.[].percentage] | add) == 100' <<<"$versions" >/dev/null || {
             echo "::error::The active Cloudflare deployment does not route exactly 100 percent of traffic; refusing an unsafe rollback snapshot."
             exit 1
           }
