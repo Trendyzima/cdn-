@@ -24,7 +24,6 @@ import (
  "time"
 
  "github.com/Trendyzima/cdn-/internal/cache"
- "github.com/Trendyzima/cdn-/internal/redis"
  "github.com/Trendyzima/cdn-/internal/config"
 )
 
@@ -39,7 +38,6 @@ type Server struct {
  fetching map[string]*fetch
  originsMu sync.Mutex
  badUntil map[string]time.Time
- redis *redis.Client
  rateShards [32]rateShard
 	tvFetching map[string]*tvFetch
 }
@@ -75,7 +73,7 @@ tvClient := &http.Client{Transport: tvTransport, Timeout: cfg.OriginTimeout, Che
   if len(via) >= cfg.TVMaxRedirects { return fmt.Errorf("too many TV redirects") }
   return nil
 }}
-sv:=&Server{cfg:cfg,cache:c,redis:redis.New(cfg.UpstashRedisURL,cfg.UpstashRedisToken),client:&http.Client{Transport:tr,Timeout:cfg.OriginTimeout,CheckRedirect:func(_ *http.Request,_ []*http.Request)error{return http.ErrUseLastResponse}},tvClient:tvClient,fetching:map[string]*fetch{},tvFetching:map[string]*tvFetch{},badUntil:map[string]time.Time{}}
+sv:=&Server{cfg:cfg,cache:c,client:&http.Client{Transport:tr,Timeout:cfg.OriginTimeout,CheckRedirect:func(_ *http.Request,_ []*http.Request)error{return http.ErrUseLastResponse}},tvClient:tvClient,fetching:map[string]*fetch{},tvFetching:map[string]*tvFetch{},badUntil:map[string]time.Time{}}
  for i:=range sv.rateShards{sv.rateShards[i].rates=make(map[string]*bucket)}
  return sv
 }
@@ -269,29 +267,6 @@ func(s *Server)fetchUpstream(ctx context.Context,rel string)([]byte,error){
  }
  if lastErr==nil{lastErr=fmt.Errorf("all upstreams unavailable")}
  return nil,lastErr
-}
-
-func(s *Server)fetchR2(rel string)([]byte,bool){
- if s.cfg.R2PublicBaseURL=="" { return nil,false }
- u:=strings.TrimRight(s.cfg.R2PublicBaseURL,"/")+"/"+strings.TrimPrefix(rel,"/")
- req,e:=http.NewRequest(http.MethodGet,u,nil); if e!=nil{return nil,false}
- resp,e:=s.client.Do(req); if e!=nil||resp==nil{return nil,false}; defer resp.Body.Close()
- if resp.StatusCode<200||resp.StatusCode>=300{return nil,false}
- data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1)); if e!=nil||int64(len(data))>s.cfg.MaxSegmentBytes{return nil,false}
- return data,true
-}
-
-func(s *Server)fetchCloudinary(rel string)([]byte,bool){
- base:=""
- l:=strings.ToLower(rel)
- if strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif")||strings.HasSuffix(l,".svg"){base=s.cfg.CloudinaryImageBaseURL}
- if strings.HasSuffix(l,".mp4")||strings.HasSuffix(l,".webm")||strings.HasSuffix(l,".mov")||strings.HasSuffix(l,".m3u8")||strings.HasSuffix(l,".ts")||strings.HasSuffix(l,".m4s")||strings.HasSuffix(l,".mp3")||strings.HasSuffix(l,".aac"){base=s.cfg.CloudinaryVideoBaseURL}
- if base==""&&s.cfg.CloudinaryCloudName!=""&&(strings.HasSuffix(l,".jpg")||strings.HasSuffix(l,".jpeg")||strings.HasSuffix(l,".png")||strings.HasSuffix(l,".webp")||strings.HasSuffix(l,".avif")||strings.HasSuffix(l,".gif")||strings.HasSuffix(l,".svg")){base="https://res.cloudinary.com/"+url.PathEscape(s.cfg.CloudinaryCloudName)+"/image/upload"}
- if base==""{return nil,false}
- u:=strings.TrimRight(base,"/")+"/"+strings.TrimPrefix(rel,"/")
- req,e:=http.NewRequest(http.MethodGet,u,nil);if e!=nil{return nil,false}
- resp,e:=s.client.Do(req);if e!=nil||resp==nil{return nil,false};defer resp.Body.Close();if resp.StatusCode<200||resp.StatusCode>=300{return nil,false}
- data,e:=io.ReadAll(io.LimitReader(resp.Body,s.cfg.MaxSegmentBytes+1));if e!=nil||int64(len(data))>s.cfg.MaxSegmentBytes{return nil,false};return data,true
 }
 
 func(s *Server)purge(w http.ResponseWriter,r *http.Request){if r.Method!=http.MethodPost&&r.Method!=http.MethodDelete{http.Error(w,"method not allowed",405);return};if s.cfg.PurgeToken==""||!hmac.Equal([]byte(r.Header.Get("Authorization")),[]byte("Bearer "+s.cfg.PurgeToken)){http.Error(w,"unauthorized",401);return};key:=strings.TrimSpace(r.URL.Query().Get("path"));if key==""{s.cache.Clear();w.WriteHeader(204);return};rel,ok:=cleanAssetPath("/v1/"+key);if !ok{http.Error(w,"invalid path",400);return};if !s.cache.Delete(rel){w.WriteHeader(404);return};w.WriteHeader(204)}

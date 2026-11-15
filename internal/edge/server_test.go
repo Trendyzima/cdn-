@@ -91,7 +91,7 @@ func TestLegacyMediaAliasesReachAssetHandler(t *testing.T) {
 }
 
 
-func TestXCloneMediaAliases(t *testing.T) {
+func TestLegacyMediaAliases(t *testing.T) {
  s := New(testConfig(t))
  for _, route := range []string{
   "/uploads/posts/123/image.jpg",
@@ -102,7 +102,7 @@ func TestXCloneMediaAliases(t *testing.T) {
  } {
   rr := httptest.NewRecorder()
   s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", route, nil))
-  if rr.Code == 400 || rr.Code == 404 { t.Fatalf("XClone media alias %s rejected: %d", route, rr.Code) }
+  if rr.Code == 400 || rr.Code == 404 { t.Fatalf("legacy media alias %s rejected: %d", route, rr.Code) }
  }
 }
 
@@ -127,20 +127,6 @@ func TestMediaURLIssuanceIsDisabledForCallerControlledPaths(t *testing.T) {
 			t.Fatalf("disabled URL helper leaked a media URL: %s", rr.Body.String())
 		}
 	}
-}
-
-func TestR2MediaOrigin(t *testing.T) {
- origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-  if r.URL.Path != "/users/u1/avatar.webp" { t.Fatalf("unexpected R2 path: %s", r.URL.Path) }
-  w.Header().Set("Content-Type", "image/webp")
-  _, _ = w.Write(make([]byte, 2048))
- }))
- defer origin.Close()
- cfg := testConfig(t)
- cfg.R2PublicBaseURL = origin.URL
- s := New(cfg)
- data, ok := s.fetchR2("users/u1/avatar.webp")
- if !ok || len(data) != 2048 { t.Fatalf("R2 media origin failed: ok=%v bytes=%d", ok, len(data)) }
 }
 
 func TestValidateRangeHeader(t *testing.T) {
@@ -446,27 +432,23 @@ func TestReadyRequiresPrivateOriginEvenWhenShieldExists(t *testing.T) {
 }
 
 func TestPublicDeliveryAlwaysConsultsBackendVisibility(t *testing.T) {
- var providerHits atomic.Int32
- provider:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
-  providerHits.Add(1)
-  _,_=w.Write([]byte("provider-bypass"))
- }))
- defer provider.Close()
- backend:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
-  if r.URL.Path!="/internal/cdn/v1/public/logo.webp" { t.Errorf("unexpected Backend origin path: %s",r.URL.Path) }
-  w.Header().Set("X-Testagram-Visibility","public")
-  _,_=w.Write([]byte("backend-authoritative"))
- }))
- defer backend.Close()
- cfg:=testConfig(t)
- cfg.OriginURLs=[]string{backend.URL}
- cfg.CloudinaryImageBaseURL=provider.URL
- cfg.R2PublicBaseURL=provider.URL
- s:=New(cfg)
- rr:=httptest.NewRecorder()
- s.Handler().ServeHTTP(rr,httptest.NewRequest(http.MethodGet,"/v1/public/logo.webp",nil))
- if rr.Code!=http.StatusOK || rr.Body.String()!="backend-authoritative" { t.Fatalf("public object did not come from Backend-classified origin: status=%d body=%q",rr.Code,rr.Body.String()) }
- if providerHits.Load()!=0 { t.Fatalf("direct public provider fallback bypassed Backend visibility: hits=%d",providerHits.Load()) }
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/cdn/v1/public/logo.webp" {
+			t.Errorf("unexpected Backend origin path: %s", r.URL.Path)
+		}
+		w.Header().Set("X-Testagram-Visibility", "public")
+		_, _ = w.Write([]byte("backend-authoritative"))
+	}))
+	defer backend.Close()
+
+	cfg := testConfig(t)
+	cfg.OriginURLs = []string{backend.URL}
+	s := New(cfg)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v1/public/logo.webp", nil))
+	if rr.Code != http.StatusOK || rr.Body.String() != "backend-authoritative" {
+		t.Fatalf("public object did not come from Backend-classified origin: status=%d body=%q", rr.Code, rr.Body.String())
+	}
 }
 
 func TestPrivateOriginMustExplicitlyClassifyResponse(t *testing.T) {

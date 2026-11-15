@@ -116,13 +116,6 @@ P2P remains an acceleration layer, never the source of truth. HTTP CDN delivery 
 | TV_PREFETCH_TIMEOUT | 8s | legacy TV prefetch tuning; inactive while `/v1/tv/*` is disabled |
 | PUBLIC_BASE_URL | empty | canonical public media origin, e.g. https://media.testagram.site |
 | MEDIA_URL_PREFIX | /v1 | stable public media path prefix |
-| CLOUDINARY_CLOUD_NAME | empty | legacy provider setting; direct delivery fallback is disabled |
-| CLOUDINARY_IMAGE_BASE_URL | empty | legacy provider setting; direct delivery fallback is disabled |
-| CLOUDINARY_VIDEO_BASE_URL | empty | legacy provider setting; direct delivery fallback is disabled |
-- `R2_PUBLIC_BASE_URL` — legacy provider setting; not used by the active request path because every cache miss must be classified by Backend.
-| UPSTASH_REDIS_REST_URL | empty | optional Upstash Redis REST endpoint for control-plane coordination |
-| UPSTASH_REDIS_REST_TOKEN | empty | server-only Upstash Redis token |
-| UPSTASH_LOCK_TTL | 8s | distributed coordination lease |
 | TRUST_CLOUDFLARE | 0 | trust CF-Connecting-IP only when the origin is network-restricted to Cloudflare or a trusted tunnel; never enable on a directly reachable origin |
 
 ## Testagram provider compatibility
@@ -163,14 +156,6 @@ there is no Supabase runtime identity dependency. Data Centre owns storage
 placement, replication, repair and deletion. The CDN is not a product API or
 authorization authority.
 
-Cloudinary and public R2 endpoints are not active delivery fallbacks. Every
-cache miss is classified by the trusted Backend origin, including objects
-under `public/`; this prevents a provider URL from bypassing canonical
-visibility and deletion state. Direct provider delivery requires a separately
-reviewed, signed-public-object contract. Private MinIO/R2/B2 objects must be
-reached through the authenticated Backend origin gateway; the current Go
-service is not an S3 Signature V4 client. Upstash Redis is optional
-control-plane coordination only, never a binary media store.
 
 Recommended active flow:
 
@@ -182,14 +167,14 @@ separate CDN-to-origin service credential. The Backend origin must explicitly
 classify the response as `private`; otherwise the CDN rejects it. Private
 responses bypass cache and are always `private, no-store`.
 
-## XClone / Testagram media compatibility
+## Legacy media route compatibility
 
 The Go CDN exposes the canonical media delivery contract. Backend owns the
 stable URL and object key; the CDN does not mint media URLs from caller-supplied
 paths or visibility flags. The legacy `GET /v1/media/url` helper intentionally
 returns HTTP 410.
 
-Supported compatibility aliases include `/media/*`, `/users/*`,
+Supported legacy route aliases include `/media/*`, `/users/*`,
 `/profiles/*`, `/uploads/*`, `/avatars/*`, `/covers/*`, `/photos/*`,
 and `/videos/*`. The canonical API path is `/v1/<object-key>`.
 
@@ -200,8 +185,8 @@ visibility; Testagram media keys commonly use `users/<owner>/<id>` for both
 public and private assets. The current Backend `/internal/cdn/v1/*` handler is
 private-only, so the public cache-miss integration remains blocked by
 [Backend issue #205](https://github.com/Trendyzima/Testagram-backend-/issues/205).
-The CDN fails closed until that public-origin contract is implemented; direct
-Cloudinary/R2 fallbacks are disabled because they bypass Backend visibility.
+The CDN fails closed until that public-origin contract is implemented. Direct
+object-store fallbacks are intentionally absent because they bypass Backend visibility.
 Unclassified, private or denied origin responses are never cached or served
 stale. A 401/403/404 origin response invalidates any cached public copy.
 
