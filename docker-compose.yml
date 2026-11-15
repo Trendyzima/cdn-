@@ -1,3 +1,4 @@
+name: testagram-cdn
 services:
   edge:
     build: .
@@ -25,5 +26,10 @@ services:
     volumes:
       - edge-cache:/app/cache
     restart: unless-stopped
+    networks: [platform]
 volumes:
   edge-cache:
+networks:
+  platform:
+    name: testagram-platform
+    external: true
