@@ -6,6 +6,12 @@ import (
 	"testing"
 )
 
+func TestDefaultHealthcheckUsesPrivateListener(t *testing.T) {
+	if defaultHealthcheckURL != "http://127.0.0.1:8082/readyz" {
+		t.Fatalf("default healthcheck URL = %q, want private listener", defaultHealthcheckURL)
+	}
+}
+
 func TestCheckURLRequiresReadyResponse(t *testing.T) {
 	tests := []struct {
 		name       string
