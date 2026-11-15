@@ -28,23 +28,19 @@ jobs:
           cat /tmp/health.json
           test "$status" = "200"
           grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/health.headers
-          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' /tmp/health.headers
+          grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-15-private-health-listener-v1[[:space:]]*$' /tmp/health.headers
           grep -q '"ok":true' /tmp/health.json
           grep -q '"service":"testagram-cdn"' /tmp/health.json
 
-      - name: Verify Go CDN readiness and trusted origin configuration
+      - name: Verify public Go CDN liveness and private endpoint isolation
         shell: bash
         run: |
           set -euo pipefail
-          status="$(curl --silent --show-error --max-time 15 \
-            -D /tmp/ready.headers -o /tmp/ready.body -w '%{http_code}' \
-            https://media.testagram.site/readyz)"
-          echo "ready_status=$status"
-          cat /tmp/ready.headers
-          cat /tmp/ready.body
-          test "$status" = "200"
-          grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' /tmp/ready.headers
-          grep -qx 'ready' /tmp/ready.body
+          ready_status="$(curl --silent --show-error --max-time 15 -o /dev/null -w '%{http_code}' https://media.testagram.site/readyz)"
+          metrics_status="$(curl --silent --show-error --max-time 15 -o /dev/null -w '%{http_code}' https://media.testagram.site/metrics)"
+          echo "public_readyz_status=$ready_status public_metrics_status=$metrics_status"
+          test "$ready_status" = "404"
+          test "$metrics_status" = "404"
 
       - name: Verify private media rejects a missing viewer assertion
         shell: bash
