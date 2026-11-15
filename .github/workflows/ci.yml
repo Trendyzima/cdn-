@@ -95,7 +95,7 @@ jobs:
             sleep 2
           done
           test "$(docker inspect --format '{{.State.Health.Status}}' testagram-edge-published-ci)" = "healthy"
-          docker exec testagram-edge-published-ci /healthcheck
+          docker exec testagram-edge-published-ci /app/healthcheck
       - name: Upload container inputs
         uses: actions/upload-artifact@v4
         with:

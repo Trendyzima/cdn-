@@ -10,7 +10,7 @@ FROM alpine:3.20
 RUN addgroup -S edge && adduser -S -G edge edge
 WORKDIR /app
 COPY --from=build /out/testagram-edge /app/testagram-edge
-COPY --from=build /out/healthcheck /healthcheck
+COPY --from=build /out/healthcheck /app/healthcheck
 RUN mkdir -p /app/cache && chown -R edge:edge /app
 USER edge
 ENV LISTEN_ADDR=:8080
@@ -18,5 +18,5 @@ ENV INTERNAL_LISTEN_ADDR=:8082
 ENV HEALTHCHECK_URL=http://127.0.0.1:8082/readyz
 ENV CACHE_DIR=/app/cache
 EXPOSE 8080 8082
-HEALTHCHECK --interval=15s --timeout=5s --retries=6 --start-period=10s CMD ["/healthcheck"]
+HEALTHCHECK --interval=15s --timeout=5s --retries=6 --start-period=10s CMD ["/app/healthcheck"]
 ENTRYPOINT ["/app/testagram-edge"]
