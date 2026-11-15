@@ -351,7 +351,7 @@ jobs:
           echo "Previous Cloudflare Worker deployment restored and verified."
 
       - name: Restore the previous R2 hostname owner if Go CDN cutover fails
-        if: failure() && steps.detach_r2_domain.outcome == 'success' && steps.verify_gateway.outcome != 'success'
+        if: failure() && steps.preflight.outputs.r2_bucket != '' && steps.detach_r2_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -366,6 +366,13 @@ jobs:
             curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE \
               "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$worker_id" \
               -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          fi
+          current_r2="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          if jq -e '.domains[]? | select(.domain=="media.testagram.site")' <<<"$current_r2" >/dev/null; then
+            echo "Previous R2 binding is already present; no restore POST needed."
+            exit 0
           fi
           restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
             "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
