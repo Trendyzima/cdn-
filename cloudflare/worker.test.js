@@ -53,7 +53,7 @@ test("canonical media hostname proxies to the Go CDN and preserves its identity"
       headers: {
         "content-type": "application/json",
         "x-testagram-cdn": "testagram-edge",
-        "x-testagram-cdn-version": "2026-11-13-backend-origin-hardened-v1",
+        "x-testagram-cdn-version": "2026-11-15-private-health-listener-v1",
       },
     });
   };
@@ -65,7 +65,7 @@ test("canonical media hostname proxies to the Go CDN and preserves its identity"
   assert.equal(response.status, 200);
   assert.equal(new URL(upstream.url).origin, cdnOrigin);
   assert.equal(response.headers.get("x-testagram-cdn"), "testagram-edge");
-  assert.equal(response.headers.get("x-testagram-cdn-version"), "2026-11-13-backend-origin-hardened-v1");
+  assert.equal(response.headers.get("x-testagram-cdn-version"), "2026-11-15-private-health-listener-v1");
   assert.deepEqual(await response.json(), { ok: true, service: "testagram-cdn" });
 });
 
