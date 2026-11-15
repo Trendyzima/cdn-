@@ -88,7 +88,8 @@ P2P remains an acceleration layer, never the source of truth. HTTP CDN delivery 
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| LISTEN_ADDR | :8080 | public HTTP listener; only application routes and minimal liveness |\n| INTERNAL_LISTEN_ADDR | :8082 | Docker-private readiness and Prometheus metrics listener; never publish through port-agent or public gateway |
+| LISTEN_ADDR | :8080 | public HTTP listener; only application routes and minimal liveness |
+| INTERNAL_LISTEN_ADDR | :8082 | Docker-private readiness and Prometheus metrics listener; never publish through port-agent or public gateway |
 | ORIGIN_URL | empty | private Backend API base URL; required for private readiness and delivery |
 | ORIGIN_URLS | empty | ordered trusted Backend-origin list; used for public-origin failover |
 | SHIELD_URLS | empty | public-cache shield URLs; private viewer-authorized requests bypass shields |
@@ -148,7 +149,7 @@ deployment, checks exact Worker route/domain ownership and confirms that
 attached through a Worker Route over that existing record; the media hostname
 keeps its existing `testagram-cdn` Custom Domain. No DNS records or unrelated
 Worker routes are deleted or replaced. The workflow then checks public service
-identity, private API readiness/metrics, CDN readiness and private-media denial.
+identity/liveness, hidden readiness and metrics, and private-media denial. Docker healthchecks validate CDN readiness on the private listener.
 The Cloudflare token needs Account Workers Scripts Read/Write and Zone Read,
 DNS Read, and Workers Routes Read/Write for `testagram.site`.
 
