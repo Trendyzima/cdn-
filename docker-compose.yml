@@ -26,5 +26,10 @@ services:
     volumes:
       - edge-cache:/app/cache
     restart: unless-stopped
+    networks: [platform]
 volumes:
   edge-cache:
+networks:
+  platform:
+    name: testagram-platform
+    external: true
