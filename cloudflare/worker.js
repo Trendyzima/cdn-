@@ -3,7 +3,7 @@ const HOSTS = Object.freeze({
   "media.testagram.site": "CDN_ORIGIN",
 });
 const PRIVATE_API_PATHS = new Set(["/readyz", "/metrics"]);
-const PRIVATE_MEDIA_PATHS = new Set(["/metrics"]);
+const PRIVATE_MEDIA_PATHS = new Set(["/readyz", "/metrics"]);
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
