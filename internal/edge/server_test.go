@@ -526,3 +526,51 @@ func TestPublicOriginRequestIsCancelledWhenViewerDisconnects(t *testing.T) {
  select { case <-cancelled: case <-time.After(time.Second):t.Fatal("public origin request was not cancelled") }
  <-done
 }
+
+
+func TestPrivateMediaConditionalRequestsAreForwarded(t *testing.T) {
+	modified := "Sun, 15 Nov 2026 10:00:00 GMT"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Testagram-Origin-Auth") != "origin-secret" {
+			t.Errorf("origin service credential missing")
+		}
+		if r.Header.Get("X-Testagram-Viewer-Authorization") != "Bearer viewer-assertion" {
+			t.Errorf("viewer assertion missing")
+		}
+		if r.Header.Get("If-None-Match") != `"private-v1"` {
+			t.Errorf("If-None-Match not forwarded: %q", r.Header.Get("If-None-Match"))
+		}
+		if r.Header.Get("If-Modified-Since") != modified {
+			t.Errorf("If-Modified-Since not forwarded: %q", r.Header.Get("If-Modified-Since"))
+		}
+		w.Header().Set("X-Testagram-Visibility", "private")
+		w.Header().Set("ETag", `"private-v1"`)
+		w.Header().Set("Last-Modified", modified)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(t)
+	cfg.OriginURLs = []string{origin.URL}
+	cfg.OriginAuthToken = "origin-secret"
+	s := New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/v1/users/u1/private.webp", nil)
+	req.Header.Set("Authorization", "Bearer viewer-assertion")
+	req.Header.Set("If-None-Match", `"private-v1"`)
+	req.Header.Set("If-Modified-Since", modified)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotModified {
+		t.Fatalf("conditional private response status=%d body=%q", rr.Code, rr.Body.String())
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("304 response unexpectedly contained %d bytes", rr.Body.Len())
+	}
+	if rr.Header().Get("ETag") != `"private-v1"` || rr.Header().Get("Last-Modified") != modified {
+		t.Fatalf("conditional response validators were not preserved: %+v", rr.Header())
+	}
+	if rr.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("private conditional response cache policy=%q", rr.Header().Get("Cache-Control"))
+	}
+}
