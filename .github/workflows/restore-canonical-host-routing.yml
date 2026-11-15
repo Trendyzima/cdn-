@@ -98,7 +98,7 @@ jobs:
           metrics_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "$CDN_ORIGIN/metrics" || true)"
           if [[ "$cdn_status" != "200" || "$ready_status" != "404" || "$metrics_status" != "404" ]] ||
              ! grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/cdn.headers" ||
-             ! grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' "$tmp/cdn.headers" ||
+             ! grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-15-private-health-listener-v1[[:space:]]*$' "$tmp/cdn.headers" ||
              ! jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/cdn.json" >/dev/null; then
             echo "::error::CDN_ORIGIN is not serving the pinned Go CDN or exposes private readiness/metrics (health=$cdn_status readiness=$ready_status metrics=$metrics_status)."
             cat "$tmp/cdn.headers" "$tmp/cdn.json" 2>/dev/null || true
@@ -206,7 +206,7 @@ jobs:
                jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
                [[ "$media_status" == "200" && "$media_ready" == "404" && "$media_metrics" == "404" ]] &&
                grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/media.headers" &&
-               grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-13-backend-origin-hardened-v1[[:space:]]*$' "$tmp/media.headers" &&
+               grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-15-private-health-listener-v1[[:space:]]*$' "$tmp/media.headers" &&
                jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null; then
               private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
               case "$private_status" in 401|403|404) ;; *) echo "::error::Canonical CDN allowed unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;; esac
