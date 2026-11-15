@@ -153,7 +153,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
    http.Error(w,"trusted origin authentication is not configured",http.StatusServiceUnavailable)
    return
   }
-  resp,err:=s.fetchUpstreamWithViewerAuthorization(r.Context(),rel,viewerAuthorization,r.Method,r.Header.Get("Range"),r.Header.Get("If-Range"))
+  resp,err:=s.fetchUpstreamWithViewerAuthorization(r.Context(),rel,viewerAuthorization,r.Method,r.Header.Get("Range"),r.Header.Get("If-Range"),r.Header.Get("If-None-Match"),r.Header.Get("If-Modified-Since"))
   if err!=nil {
    status:=http.StatusBadGateway
    var responseErr *originResponseError
@@ -174,7 +174,7 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
   }
   w.Header().Set("Cache-Control","private, no-store")
   w.Header().Set("CDN-Cache-Control","no-store")
-  w.Header().Set("Vary","Authorization, Range")
+  w.Header().Set("Vary","Authorization, Range, If-Range, If-None-Match, If-Modified-Since")
   w.Header().Set("X-Cache","BYPASS")
   w.Header().Set("Cache-Status","testagram; fwd=bypass")
   if isLiveMedia(rel) { w.Header().Set("X-Accel-Buffering","no") }
@@ -299,7 +299,7 @@ func(s *Server)purge(w http.ResponseWriter,r *http.Request){if r.Method!=http.Me
 
 const maxPrivateMediaObjectBytes int64 = 1 << 30
 
-func(s *Server)fetchUpstreamWithViewerAuthorization(ctx context.Context,rel,viewerAuthorization,method,rangeHeader,ifRange string)(*http.Response,error){
+func(s *Server)fetchUpstreamWithViewerAuthorization(ctx context.Context,rel,viewerAuthorization,method,rangeHeader,ifRange,ifNoneMatch,ifModifiedSince string)(*http.Response,error){
  bases:=append([]string{},s.cfg.OriginURLs...)
  var lastErr error
  for _,baseURL:=range bases {
@@ -311,6 +311,8 @@ func(s *Server)fetchUpstreamWithViewerAuthorization(ctx context.Context,rel,view
   req.Header.Set("X-Testagram-Origin-Auth",s.cfg.OriginAuthToken)
   if rangeHeader!="" { req.Header.Set("Range",rangeHeader) }
   if ifRange!="" { req.Header.Set("If-Range",ifRange) }
+  if ifNoneMatch!="" { req.Header.Set("If-None-Match",ifNoneMatch) }
+  if ifModifiedSince!="" { req.Header.Set("If-Modified-Since",ifModifiedSince) }
   // Bound connection and response-header setup through the transport, but do not apply a whole-body timeout: large media streams may legitimately outlive OriginTimeout. The incoming request context still cancels the upstream stream when the viewer disconnects.
   privateClient:=&http.Client{Transport:s.client.Transport,Timeout:0,CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse}}
   resp,e:=privateClient.Do(req);if e!=nil{lastErr=e;continue}
