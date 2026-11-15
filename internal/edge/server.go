@@ -82,11 +82,25 @@ sv:=&Server{cfg:cfg,cache:c,redis:redis.New(cfg.UpstashRedisURL,cfg.UpstashRedis
 
 func(s *Server)Handler()http.Handler{
  m:=http.NewServeMux()
- m.HandleFunc("/healthz",s.health);m.HandleFunc("/readyz",s.ready);m.HandleFunc("/metrics",s.metrics)
+ m.HandleFunc("/healthz",s.health)
  m.HandleFunc("/route",s.route);m.HandleFunc("/api/cache/purge",s.purge);m.HandleFunc("/v1/media/url",s.mediaURL);m.HandleFunc("/api/media/url",s.mediaURL);m.HandleFunc("/v1/tv/",s.tvAsset);m.HandleFunc("/v1/",s.asset);m.HandleFunc("/media/",s.mediaAlias);m.HandleFunc("/users/",s.mediaAlias);m.HandleFunc("/profiles/",s.mediaAlias);m.HandleFunc("/uploads/",s.mediaAlias);m.HandleFunc("/avatars/",s.mediaAlias);m.HandleFunc("/covers/",s.mediaAlias);m.HandleFunc("/photos/",s.mediaAlias);m.HandleFunc("/videos/",s.mediaAlias)
  return s.cdnIdentity(s.cors(s.security(s.rateLimit(m))))
 }
-func(s *Server)health(w http.ResponseWriter,_ *http.Request){w.Header().Set("Content-Type","application/json");w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Cache-Control","no-store");items,bytes,capacity:=s.cache.Stats();hotBytes,hotCapacity:=s.cache.HotStats();_ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"service":"testagram-cdn","node_id":s.cfg.NodeID,"inflight":s.inflight.Load(),"cache_items":items,"cache_bytes":bytes,"cache_capacity":capacity,"hot_cache_bytes":hotBytes,"hot_cache_capacity":hotCapacity,"stale_hits":s.staleHits.Load(),"tv_prefetch_hits":s.tvPrefetchHits.Load(),"tv_prefetch_misses":s.tvPrefetchMisses.Load(),"tv_prefetch_successes":s.tvPrefetchSuccesses.Load(),"tv_prefetch_failures":s.tvPrefetchFailures.Load(),"tv_prefetch_warmed_seconds":s.tvPrefetchWarmedSeconds.Load()})}
+
+// InternalHandler is bound only to the Docker-private listener. It must never
+// be published by the InstaBox port agent or the Cloudflare public gateway.
+func(s *Server)InternalHandler()http.Handler{
+ m:=http.NewServeMux()
+ m.HandleFunc("/readyz",s.ready)
+ m.HandleFunc("/metrics",s.metrics)
+ return s.security(m)
+}
+func(s *Server)health(w http.ResponseWriter,_ *http.Request){
+ w.Header().Set("Content-Type","application/json")
+ w.Header().Set("X-Content-Type-Options","nosniff")
+ w.Header().Set("Cache-Control","no-store")
+ _ = json.NewEncoder(w).Encode(map[string]any{"ok":true,"service":"testagram-cdn"})
+}
 func(s *Server)ready(w http.ResponseWriter,_ *http.Request){
  if len(s.cfg.OriginURLs)==0 { http.Error(w,"trusted private origin not configured",503); return }
  if strings.TrimSpace(s.cfg.OriginAuthToken)=="" { http.Error(w,"trusted origin authentication is not configured",503); return }
