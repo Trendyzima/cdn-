@@ -438,7 +438,7 @@ func(s *Server)cors(next http.Handler)http.Handler{return http.HandlerFunc(func(
 func(s *Server)security(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.Header().Set("X-Content-Type-Options","nosniff");w.Header().Set("Referrer-Policy","no-referrer");w.Header().Set("X-Frame-Options","DENY");next.ServeHTTP(w,r)})}
 
 
-const cdnVersion = "2026-11-13-backend-origin-hardened-v1"
+const cdnVersion = "2026-11-15-private-health-listener-v1"
 
 func (s *Server) cdnIdentity(next http.Handler) http.Handler {
   return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
