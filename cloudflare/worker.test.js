@@ -53,7 +53,7 @@ test("canonical media hostname proxies to the Go CDN and preserves its identity"
       headers: {
         "content-type": "application/json",
         "x-testagram-cdn": "testagram-edge",
-        "x-testagram-cdn-version": "2026-11-13-backend-origin-hardened-v1",
+        "x-testagram-cdn-version": "2026-11-15-private-health-listener-v1",
       },
     });
   };
@@ -65,7 +65,7 @@ test("canonical media hostname proxies to the Go CDN and preserves its identity"
   assert.equal(response.status, 200);
   assert.equal(new URL(upstream.url).origin, cdnOrigin);
   assert.equal(response.headers.get("x-testagram-cdn"), "testagram-edge");
-  assert.equal(response.headers.get("x-testagram-cdn-version"), "2026-11-13-backend-origin-hardened-v1");
+  assert.equal(response.headers.get("x-testagram-cdn-version"), "2026-11-15-private-health-listener-v1");
   assert.deepEqual(await response.json(), { ok: true, service: "testagram-cdn" });
 });
 
@@ -80,20 +80,15 @@ test("public API hides readiness and metrics while preserving liveness", async (
   assert.equal(fetches, 0);
 });
 
-test("media gateway hides metrics while preserving CDN readiness", async (t) => {
+test("media gateway hides readiness and metrics while preserving public liveness", async (t) => {
   restoreFetch(t);
   let fetches = 0;
-  globalThis.fetch = async (request) => {
-    fetches += 1;
-    assert.equal(new URL(request.url).pathname, "/readyz");
-    return new Response("ready");
-  };
-  const metrics = await worker.fetch(new Request("https://media.testagram.site/metrics"), env());
+  globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
   const ready = await worker.fetch(new Request("https://media.testagram.site/readyz"), env());
+  const metrics = await worker.fetch(new Request("https://media.testagram.site/metrics"), env());
+  assert.equal(ready.status, 404);
   assert.equal(metrics.status, 404);
-  assert.equal(ready.status, 200);
-  assert.equal(await ready.text(), "ready");
-  assert.equal(fetches, 1);
+  assert.equal(fetches, 0);
 });
 
 test("replaces spoofed forwarding metadata and strips hop-by-hop headers", async (t) => {

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const defaultHealthcheckURL = "http://127.0.0.1:8080/readyz"
+const defaultHealthcheckURL = "http://127.0.0.1:8082/readyz"
 
 func checkURL(target string) error {
 	target = strings.TrimSpace(target)

@@ -4,6 +4,7 @@ import ("os";"strconv";"strings";"time")
 
 type Config struct {
     ListenAddr string
+    InternalListenAddr string
     OriginURL string
     OriginURLs []string
     PublicBaseURL string
@@ -46,6 +47,7 @@ type Config struct {
 func Load() Config {
     return Config{
         ListenAddr: env("LISTEN_ADDR",":8080"),
+        InternalListenAddr: env("INTERNAL_LISTEN_ADDR",":8082"),
         OriginURL: strings.TrimRight(os.Getenv("ORIGIN_URL"),"/"),
         OriginURLs: split(os.Getenv("ORIGIN_URLS")),
         PublicBaseURL: strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"),"/"),

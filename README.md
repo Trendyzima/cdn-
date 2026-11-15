@@ -31,7 +31,7 @@ For example, 100,000 viewers at an average 2 Mbps media bitrate represents about
 - HLS-aware TTL and HTTP cache-control
 - opt-in 100,000 logical-viewer fan-out test (CAPACITY_TEST=1)
 - Prometheus-style counters for cache, upstream, inflight, stale and rejection behavior
-- bounded media/cache observability: cache hits/misses, origin requests, in-flight work, bytes served, stale hits and rejection counters on `/healthz` and `/metrics`
+- public `/healthz` exposes only service identity; Prometheus `/metrics` and dependency-aware `/readyz` are served on the Docker-private `INTERNAL_LISTEN_ADDR` (default `:8082`) and are not public endpoints
 
 Live media byte delivery supports short manifest cache lifetimes, range requests and `X-Accel-Buffering: no`. TV catalogue authorization, playback grants, manifest rewriting and segment proxying are not enabled on the production route yet.
 
@@ -88,8 +88,9 @@ P2P remains an acceleration layer, never the source of truth. HTTP CDN delivery 
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| LISTEN_ADDR | :8080 | HTTP listener |
-| ORIGIN_URL | empty | private Backend API base URL; required for readiness and delivery |
+| LISTEN_ADDR | :8080 | public HTTP listener; only application routes and minimal liveness |
+| INTERNAL_LISTEN_ADDR | :8082 | Docker-private readiness and Prometheus metrics listener; never publish through port-agent or public gateway |
+| ORIGIN_URL | empty | private Backend API base URL; required for private readiness and delivery |
 | ORIGIN_URLS | empty | ordered trusted Backend-origin list; used for public-origin failover |
 | SHIELD_URLS | empty | public-cache shield URLs; private viewer-authorized requests bypass shields |
 | EDGE_URLS | empty | deterministic edge-routing pool |
@@ -131,7 +132,7 @@ This repository is the canonical Go media-delivery plane for Testagram.
 private viewer-authorized streaming, HLS/DASH byte delivery, range requests,
 cache, shields and configured trusted origins.
 
-Cloudflare provides authoritative DNS and private R2 object storage. The
+Backblaze B2 is the primary durable object store and Cloudflare R2 is its verified private replica. Cloudflare provides authoritative DNS and the hostname gateway. The
 Cloudflare Worker under `cloudflare/` is a hostname gateway only;
 it is not a storage or authorization authority. The canonical API and media
 hostnames are bound to this gateway, which forwards requests to the independently
@@ -148,7 +149,7 @@ deployment, checks exact Worker route/domain ownership and confirms that
 attached through a Worker Route over that existing record; the media hostname
 keeps its existing `testagram-cdn` Custom Domain. No DNS records or unrelated
 Worker routes are deleted or replaced. The workflow then checks public service
-identity, private API readiness/metrics, CDN readiness and private-media denial.
+identity/liveness, hidden readiness and metrics, and private-media denial. Docker healthchecks validate CDN readiness on the private listener.
 The Cloudflare token needs Account Workers Scripts Read/Write and Zone Read,
 DNS Read, and Workers Routes Read/Write for `testagram.site`.
 
@@ -174,7 +175,7 @@ control-plane coordination only, never a binary media store.
 Recommended active flow:
 
 Viewer -> Go Testagram CDN -> public cache or authenticated Backend origin
-Backend -> Data Centre -> private object providers (Instabox/MinIO, R2, B2)
+Backend -> Data Centre -> Backblaze B2 primary + Cloudflare R2 replica (MinIO is local/legacy only)
 
 The Go CDN's private path forwards a Backend-issued viewer assertion and a
 separate CDN-to-origin service credential. The Backend origin must explicitly
