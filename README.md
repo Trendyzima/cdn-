@@ -149,7 +149,7 @@ deployment, checks exact Worker route/domain ownership and confirms that
 attached through a Worker Route over that existing record; the media hostname
 keeps its existing `testagram-cdn` Custom Domain. No DNS records or unrelated
 Worker routes are deleted or replaced. The workflow then checks public service
-identity/liveness, hidden readiness and metrics, and private-media denial. Docker healthchecks validate CDN readiness on the private listener.
+identity/liveness, hidden readiness and metrics, and private-media denial. Docker healthchecks validate CDN readiness on the private listener. Before deployment it snapshots the active Worker version split; if the post-deploy public smoke fails, it restores that exact prior split through the Cloudflare Deployments API and verifies the rollback.
 The Cloudflare token needs Account Workers Scripts Read/Write and Zone Read,
 DNS Read, and Workers Routes Read/Write for `testagram.site`.
 
