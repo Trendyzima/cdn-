@@ -181,11 +181,18 @@ jobs:
           fi
 
           pages_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/apex-pages-domain.json -w '%{http_code}' "$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/testagram.site" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
-          if [[ "$pages_status" != "404" ]]; then
-            echo "::error::testagram.site must be detached from Cloudflare Pages before the Backend/Federation Worker route can own the apex (Pages API HTTP $pages_status)."
+          pages_attached=false
+          if [[ "$pages_status" == "200" ]] && jq -e '.success == true and .result.name == "testagram.site"' /tmp/apex-pages-domain.json >/dev/null; then
+            pages_attached=true
+            echo "Confirmed testagram.site is attached only to the expected Flutter Pages project; the guarded cutover will detach this one hostname after all origin and route preflights pass."
+          elif [[ "$pages_status" == "404" ]]; then
+            echo "testagram.site is already detached from the Flutter Pages project."
+          else
+            echo "::error::Could not safely establish exact apex Pages ownership (HTTP $pages_status)."
             jq -c '{success,errors,messages,result}' /tmp/apex-pages-domain.json 2>/dev/null || true
             exit 1
           fi
+          echo "pages_attached=$pages_attached" >> "$GITHUB_OUTPUT"
 
           for host in api.testagram.site media.testagram.site testagram.site; do
             owners="$(jq -r --arg host "$host" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | [.service,(.environment // "production")] | @tsv' <<<"$domains")"
@@ -334,6 +341,35 @@ jobs:
           set -euo pipefail
           test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
           printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
+
+      - name: Detach only the verified apex hostname from Flutter Pages
+        if: steps.preflight.outputs.pages_attached == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          endpoint="$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/testagram.site"
+          current="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and .result.name == "testagram.site"' <<<"$current" >/dev/null || {
+            echo "::error::The exact apex Pages association changed after preflight; refusing to detach an unexpected hostname."
+            jq -c '{errors,result}' <<<"$current"; exit 1;
+          }
+          removed="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true' <<<"$removed" >/dev/null || {
+            echo "::error::Cloudflare did not confirm removal of the exact testagram.site Pages association."
+            jq -c '{errors,result}' <<<"$removed"; exit 1;
+          }
+          for attempt in $(seq 1 30); do
+            status="$(curl -sS --connect-timeout 5 --max-time 10 -o /tmp/apex-pages-detached.json -w '%{http_code}' "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+            if [[ "$status" == "404" ]]; then
+              echo "Verified testagram.site is detached from Flutter Pages. DNS, the Pages project and www.testagram.site are untouched."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Cloudflare did not confirm apex Pages detachment after 60 seconds."
+          jq -c '{errors,result}' /tmp/apex-pages-detached.json 2>/dev/null || true
+          exit 1
 
       - name: Deploy Worker gateway on canonical API and media hostnames
         id: deploy_gateway
