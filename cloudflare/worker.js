@@ -124,60 +124,35 @@ async function wakeMachine(env) {
   const api = "https://api.instabox.sh";
   const auth = { "X-API-Key": apiKey };
   const machineUrl = api + "/v1/machines/" + encodeURIComponent(machineId);
-  const readMachine = async () => {
-    const response = await fetch(machineUrl, { headers: auth });
-    if (!response.ok) return null;
-    return response.json();
-  };
 
-  let machine;
   try {
-    machine = await readMachine();
-    if (!machine || machine.state === "error") return false;
-    if (machine.state === "running" && machine.runtime?.ready === true) return true;
-
-    if (machine.state !== "running") {
-      const start = await fetch(machineUrl + "/start", {
-        method: "POST",
-        headers: {
-          ...auth,
-          "Content-Type": "application/json",
-          // Concurrent real user requests in the same minute share one start
-          // operation instead of creating a start storm.
-          "Idempotency-Key": "testagram-edge-wake-" + machineId + "-" + Math.floor(Date.now() / 60000),
-        },
-        body: "{}",
-      });
-      // A concurrent edge request or InstaBox's own resume path may have
-      // started the machine first. If start returns a conflict, continue with
-      // readiness polling instead of treating that race as a hard failure.
-      if (start.ok) {
-        const operation = await start.json();
-        const operationId = operation.id;
-        if (operationId) {
-          let operationSucceeded = false;
-          for (let attempt = 0; attempt < 8; attempt += 1) {
-            const status = await fetch(api + "/v1/operations/" + encodeURIComponent(operationId), {
-              headers: auth,
-            });
-            if (!status.ok) return false;
-            const current = await status.json();
-            if (current.state === "succeeded") {
-              operationSucceeded = true;
-              break;
-            }
-            if (current.state === "failed") return false;
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-          if (!operationSucceeded) return false;
-        }
-      }
+    // InstaBox's dedicated wake endpoint is specifically for an idle-suspended
+    // machine. It waits for the resume to finish (up to 45 seconds), coalesces
+    // concurrent callers, and deliberately does not undo a manual stop/suspend.
+    // Do not use /start for every non-running state: that is wrong for paused VMs.
+    const wake = await fetch(machineUrl + "/wake", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    if (wake.ok) {
+      const machine = await wake.json();
+      return machine?.state === "running" && machine?.runtime?.ready === true;
     }
 
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      machine = await readMachine();
+    // A concurrent lifecycle operation may already be resuming the machine.
+    // Only wait through that explicit conflict; manual pause/stop, cooldown,
+    // quota, auth and capacity errors fail closed without overriding policy.
+    if (wake.status !== 409) return false;
+    const failure = await wake.json().catch(() => ({}));
+    if (failure?.error?.code !== "operation_conflict") return false;
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const response = await fetch(machineUrl, { headers: auth });
+      if (!response.ok) return false;
+      const machine = await response.json();
       if (machine?.state === "running" && machine?.runtime?.ready === true) return true;
-      if (machine?.state === "error") return false;
+      if (["stopped", "suspended", "error", "deleted"].includes(machine?.state)) return false;
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   } catch {
