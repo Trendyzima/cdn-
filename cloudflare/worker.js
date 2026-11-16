@@ -223,12 +223,16 @@ export default {
     target.pathname = incoming.pathname;
     target.search = incoming.search;
     const retryRequest = request.clone();
+    const replaySafe =
+      (["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.headers.get("upgrade")) ||
+      Boolean(request.headers.get("idempotency-key"));
     let upstreamResponse;
     try {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
       if ([502, 503, 504].includes(upstreamResponse.status)) {
         try { await upstreamResponse.body?.cancel(); } catch {}
         if (!await wakeMachine(env)) return recoveryUnavailable("machine_wake_failed");
+        if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
           try { await upstreamResponse.body?.cancel(); } catch {}
@@ -237,6 +241,7 @@ export default {
       }
     } catch {
       if (!await wakeMachine(env)) return recoveryUnavailable("machine_wake_failed");
+      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
       try {
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
       } catch {
