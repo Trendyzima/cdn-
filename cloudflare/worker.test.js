@@ -4,9 +4,10 @@ import worker from "./worker.js";
 
 const apiOrigin = "https://machine-api.instabox.sh";
 const cdnOrigin = "https://machine-cdn.instabox.sh";
+const apexOrigin = "https://machine-apex.instabox.sh";
 
 function env(overrides = {}) {
-  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, ...overrides };
+  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, ...overrides };
 }
 
 function restoreFetch(t) {
@@ -67,6 +68,48 @@ test("canonical media hostname proxies to the Go CDN and preserves its identity"
   assert.equal(response.headers.get("x-testagram-cdn"), "testagram-edge");
   assert.equal(response.headers.get("x-testagram-cdn-version"), "2026-11-15-private-health-listener-v1");
   assert.deepEqual(await response.json(), { ok: true, service: "testagram-cdn" });
+});
+
+test("apex WebFinger and ActivityPub paths proxy to the dedicated Caddy origin", async (t) => {
+  restoreFetch(t);
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = request;
+    return new Response(JSON.stringify({ subject: "acct:alice@testagram.site" }), {
+      status: 200,
+      headers: { "content-type": "application/jrd+json" },
+    });
+  };
+  const response = await worker.fetch(
+    new Request("https://testagram.site/.well-known/webfinger?resource=acct%3Aalice%40testagram.site"),
+    env(),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(new URL(upstream.url).origin, apexOrigin);
+  assert.equal(new URL(upstream.url).pathname, "/.well-known/webfinger");
+  assert.equal(new URL(upstream.url).search, "?resource=acct%3Aalice%40testagram.site");
+  assert.equal(upstream.headers.get("x-forwarded-host"), "testagram.site");
+  assert.equal(upstream.headers.get("x-forwarded-proto"), "https");
+  assert.equal(response.headers.get("content-type"), "application/jrd+json");
+});
+
+test("apex ordinary web paths preserve Caddy's canonical redirect to www", async (t) => {
+  restoreFetch(t);
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = request;
+    return new Response(null, {
+      status: 308,
+      headers: { location: "https://www.testagram.site/about?from=apex" },
+    });
+  };
+  const response = await worker.fetch(
+    new Request("https://testagram.site/about?from=apex"),
+    env(),
+  );
+  assert.equal(response.status, 308);
+  assert.equal(new URL(upstream.url).origin, apexOrigin);
+  assert.equal(response.headers.get("location"), "https://www.testagram.site/about?from=apex");
 });
 
 test("public API hides readiness and metrics while preserving liveness", async (t) => {
