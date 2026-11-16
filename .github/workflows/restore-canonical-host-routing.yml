@@ -21,9 +21,10 @@ on:
         required: true
         type: string
       machine_id:
-        description: "Exact InstaBox machine ID for testagramdb, reported by the Backend deployment"
+        description: "Exact InstaBox machine ID for testagramdb; confirm against the Backend deployment summary"
         required: true
         type: string
+        default: m_agq4me2xgrgx5ge52ts437tqea
 
 permissions:
   contents: read
