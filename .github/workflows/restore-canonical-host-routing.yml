@@ -1,10 +1,10 @@
-name: Restore canonical Testagram API and Go CDN host routing
+name: Restore canonical Testagram API, Go CDN and apex federation routing
 
 on:
   workflow_dispatch:
     inputs:
       confirm_canonical_host_routing:
-        description: "Explicitly authorize updating the production Cloudflare Worker for api.testagram.site and media.testagram.site"
+        description: "Explicitly authorize updating the production Cloudflare Worker for API, media and apex federation hostnames"
         required: true
         type: boolean
         default: false
@@ -16,6 +16,15 @@ on:
         description: "Verified public InstaBox HTTPS URL for the Go CDN port 8081 (no path)"
         required: true
         type: string
+      apex_origin:
+        description: "Verified public InstaBox HTTPS URL for the dedicated Caddy apex/Federation port 8443 (no path)"
+        required: true
+        type: string
+      machine_id:
+        description: "Exact InstaBox machine ID for testagramdb; confirm against the Backend deployment summary"
+        required: true
+        type: string
+        default: m_agq4me2xgrgx5ge52ts437tqea
 
 permissions:
   contents: read
@@ -26,7 +35,7 @@ concurrency:
 
 jobs:
   reconcile:
-    name: Deploy canonical API and Go CDN gateway
+    name: Deploy canonical API, media and apex federation gateway
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -34,6 +43,9 @@ jobs:
       CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       API_ORIGIN: ${{ inputs.api_origin }}
       CDN_ORIGIN: ${{ inputs.cdn_origin }}
+      APEX_ORIGIN: ${{ inputs.apex_origin }}
+      MACHINE_ID: ${{ inputs.machine_id }}
+      INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
       CONFIRM_CANONICAL_HOST_ROUTING: ${{ inputs.confirm_canonical_host_routing }}
     steps:
       - uses: actions/checkout@v4
@@ -51,12 +63,14 @@ jobs:
           [[ "$CONFIRM_CANONICAL_HOST_ROUTING" == "true" ]] || { echo "::error::Set confirm_canonical_host_routing=true to authorize the production Worker deployment."; exit 1; }
           test -n "$CF_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN."; exit 1; }
           test -n "$CF_ACCOUNT_ID" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID."; exit 1; }
-          python3 - "$API_ORIGIN" "$CDN_ORIGIN" <<'PY'
-          import ipaddress, sys
+          test -n "$INSTABOX_API_KEY" || { echo "::error::Missing INSTABOX_API_KEY repository secret for request-triggered machine recovery."; exit 1; }
+          python3 - "$API_ORIGIN" "$CDN_ORIGIN" "$APEX_ORIGIN" "$MACHINE_ID" <<'PY'
+          import ipaddress, re, sys
           from urllib.parse import urlparse
           for label, raw, canonical in (
               ("API_ORIGIN", sys.argv[1], "api.testagram.site"),
               ("CDN_ORIGIN", sys.argv[2], "media.testagram.site"),
+              ("APEX_ORIGIN", sys.argv[3], "testagram.site"),
           ):
               u = urlparse(raw)
               if (u.scheme != "https" or not u.hostname or u.username or u.password
@@ -74,9 +88,17 @@ jobs:
                   pass
               else:
                   raise SystemExit(f"{label} must use the InstaBox public hostname, not a literal IP")
-          if urlparse(sys.argv[1]).hostname == urlparse(sys.argv[2]).hostname:
-              raise SystemExit("API_ORIGIN and CDN_ORIGIN must be different published port hostnames")
+          if len({urlparse(value).hostname for value in sys.argv[1:4]}) != 3:
+              raise SystemExit("API_ORIGIN, CDN_ORIGIN and APEX_ORIGIN must use three different published port hostnames")
+          if not re.fullmatch(r"m_[a-z2-7]{26}", sys.argv[4]):
+              raise SystemExit("MACHINE_ID must match the exact InstaBox ID format m_ plus 26 lowercase base32 characters")
           PY
+          machine_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/instabox-machine.json -w '%{http_code}' -H "X-API-Key: $INSTABOX_API_KEY" "https://api.instabox.sh/v1/machines/$MACHINE_ID" || true)"
+          if [[ "$machine_status" != "200" ]] || ! jq -e '.state != null' /tmp/instabox-machine.json >/dev/null; then
+            echo "::error::Could not verify the selected InstaBox machine with the supplied recovery credential (HTTP $machine_status)."
+            jq -c '{id,state,error}' /tmp/instabox-machine.json 2>/dev/null || true
+            exit 1
+          fi
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
 
@@ -109,7 +131,24 @@ jobs:
             401|403|404) ;;
             *) echo "::error::Go CDN origin did not deny unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;;
           esac
-          echo "Both origins identify the correct services; private readiness/metrics are hidden and private-media denial passed."
+          apex_health="$(curl -sS --connect-timeout 5 --max-time 20 -o "$tmp/apex-health.json" -w '%{http_code}' "$APEX_ORIGIN/_testagram/edge-health" || true)"
+          apex_root="$(curl -sS --connect-timeout 5 --max-time 20 -D "$tmp/apex-root.headers" -o /dev/null -w '%{http_code}' "$APEX_ORIGIN/" || true)"
+          apex_webfinger="$(curl -sS --connect-timeout 5 --max-time 20 -o "$tmp/apex-webfinger.json" -w '%{http_code}' "$APEX_ORIGIN/.well-known/webfinger?resource=acct:nonexistent-probe@invalid.testagram.site" || true)"
+          if [[ "$apex_health" != "200" ]] || ! jq -e '.ok == true and .service == "testagram-apex-edge"' "$tmp/apex-health.json" >/dev/null; then
+            echo "::error::APEX_ORIGIN is not serving the expected Caddy edge identity (HTTP $apex_health)."
+            cat "$tmp/apex-health.json" 2>/dev/null || true
+            exit 1
+          fi
+          if [[ "$apex_root" != "308" ]] || ! grep -Fqi 'https://www.testagram.site' "$tmp/apex-root.headers"; then
+            echo "::error::APEX_ORIGIN root does not redirect to https://www.testagram.site (HTTP $apex_root)."
+            cat "$tmp/apex-root.headers"
+            exit 1
+          fi
+          case "$apex_webfinger" in
+            200|400|404) ;;
+            *) echo "::error::APEX_ORIGIN WebFinger path failed to reach Federation safely (HTTP $apex_webfinger)."; cat "$tmp/apex-webfinger.json" 2>/dev/null || true; exit 1 ;;
+          esac
+          echo "API, CDN and apex origins identify the expected services; private API/CDN health and media boundaries are preserved."
 
       - name: Preflight Cloudflare zone and existing hostname ownership
         id: preflight
@@ -135,13 +174,27 @@ jobs:
             echo "::error::Cannot inspect all Worker routes; verify Zone Workers Routes Read/Write and review pagination."
             jq -c '.errors // []' <<<"$routes"; exit 1;
           }
-          broad="$(jq -r '.result[]? | select(.pattern=="*.testagram.site/*" or .pattern=="testagram.site/*") | .pattern' <<<"$routes")"
+          broad="$(jq -r '.result[]? | select(.pattern=="*.testagram.site/*") | .pattern' <<<"$routes")"
           if [[ -n "$broad" ]]; then
             echo "::error::A broad zone-wide Worker route could affect unrelated Testagram services. Review it manually before cutover:"
             printf '%s\n' "$broad"; exit 1;
           fi
 
-          for host in api.testagram.site media.testagram.site; do
+          pages_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/apex-pages-domain.json -w '%{http_code}' "$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/testagram.site" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+          pages_attached=false
+          if [[ "$pages_status" == "200" ]] && jq -e '.success == true and .result.name == "testagram.site"' /tmp/apex-pages-domain.json >/dev/null; then
+            pages_attached=true
+            echo "Confirmed testagram.site is attached only to the expected Flutter Pages project; the guarded cutover will detach this one hostname after all origin and route preflights pass."
+          elif [[ "$pages_status" == "404" ]]; then
+            echo "testagram.site is already detached from the Flutter Pages project."
+          else
+            echo "::error::Could not safely establish exact apex Pages ownership (HTTP $pages_status)."
+            jq -c '{success,errors,messages,result}' /tmp/apex-pages-domain.json 2>/dev/null || true
+            exit 1
+          fi
+          echo "pages_attached=$pages_attached" >> "$GITHUB_OUTPUT"
+
+          for host in api.testagram.site media.testagram.site testagram.site; do
             owners="$(jq -r --arg host "$host" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | [.service,(.environment // "production")] | @tsv' <<<"$domains")"
             while IFS=$'\t' read -r service environment; do
               [[ -n "$service" ]] || continue
@@ -212,18 +265,23 @@ jobs:
             exit 1
           fi
 
+          apex_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$apex_dns" >/dev/null || {
+            echo "::error::testagram.site must have an existing proxied A/AAAA/CNAME record for its exact Worker Route. No DNS records will be changed."
+            jq -c '.errors // .result' <<<"$apex_dns"; exit 1;
+          }
           api_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
             echo "::error::api.testagram.site must have an existing proxied A/AAAA/CNAME record for its Worker Route. No DNS records will be changed."
             jq -c '.errors // .result' <<<"$api_dns"; exit 1;
           }
-          echo "Cloudflare zone, exact Worker ownership/routes and proxied API DNS passed preflight. No DNS records will be changed."
+          echo "Cloudflare zone, exact Pages apex ownership, Worker ownership/routes and proxied apex/API DNS passed preflight. Only the verified Pages apex association may be detached during the confirmed cutover; DNS records will not be changed."
 
       - name: Test canonical gateway contract
         working-directory: cloudflare
         run: npm test
 
-      - name: Capture the active Cloudflare deployment for rollback
+      - name: Capture the active Cloudflare deployment for emergency manual rollback
         id: previous_deployment
         shell: bash
         run: |
@@ -273,6 +331,46 @@ jobs:
           echo "::error::R2 custom-domain binding did not detach; refusing Worker deployment."
           exit 1
 
+      - name: Store the InstaBox recovery credential as a Cloudflare Worker secret
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
+          printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
+
+      - name: Detach only the verified apex hostname from Flutter Pages
+        if: steps.preflight.outputs.pages_attached == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          endpoint="$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/testagram.site"
+          current="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and .result.name == "testagram.site"' <<<"$current" >/dev/null || {
+            echo "::error::The exact apex Pages association changed after preflight; refusing to detach an unexpected hostname."
+            jq -c '{errors,result}' <<<"$current"; exit 1;
+          }
+          removed="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true' <<<"$removed" >/dev/null || {
+            echo "::error::Cloudflare did not confirm removal of the exact testagram.site Pages association."
+            jq -c '{errors,result}' <<<"$removed"; exit 1;
+          }
+          for attempt in $(seq 1 30); do
+            status="$(curl -sS --connect-timeout 5 --max-time 10 -o /tmp/apex-pages-detached.json -w '%{http_code}' "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+            if [[ "$status" == "404" ]]; then
+              echo "Verified testagram.site is detached from Flutter Pages. DNS, the Pages project and www.testagram.site are untouched."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Cloudflare did not confirm apex Pages detachment after 60 seconds."
+          jq -c '{errors,result}' /tmp/apex-pages-detached.json 2>/dev/null || true
+          exit 1
+
       - name: Deploy Worker gateway on canonical API and media hostnames
         id: deploy_gateway
         uses: cloudflare/wrangler-action@v3
@@ -280,7 +378,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloudflare
-          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}"
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}" --var "APEX_ORIGIN:${{ inputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
 
       - name: Verify canonical public API and Go CDN identities
         id: verify_gateway
@@ -297,59 +395,35 @@ jobs:
             media_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/media.headers" -o "$tmp/media.json" -w '%{http_code}' "https://media.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
             media_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
             media_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            apex_health="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/apex-health.json" -w '%{http_code}' "https://testagram.site/_testagram/edge-health?release_probe=$GITHUB_RUN_ID" || true)"
+            apex_root="$(curl -sS --connect-timeout 5 --max-time 15 -D "$tmp/apex-root.headers" -o /dev/null -w '%{http_code}' "https://testagram.site/?release_probe=$GITHUB_RUN_ID" || true)"
+            apex_webfinger="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/apex-webfinger.json" -w '%{http_code}' "https://testagram.site/.well-known/webfinger?resource=acct:nonexistent-probe@invalid.testagram.site" || true)"
             if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" && "$tv_catalog_status" == "401" ]] &&
                grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" &&
                jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
                [[ "$media_status" == "200" && "$media_ready" == "404" && "$media_metrics" == "404" ]] &&
                grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/media.headers" &&
                grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-15-private-health-listener-v1[[:space:]]*$' "$tmp/media.headers" &&
-               jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null; then
+               jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null &&
+               [[ "$apex_health" == "200" && "$apex_root" == "308" ]] &&
+               jq -e '.ok == true and .service == "testagram-apex-edge"' "$tmp/apex-health.json" >/dev/null &&
+               grep -Fqi 'https://www.testagram.site' "$tmp/apex-root.headers"; then
+              case "$apex_webfinger" in 200|400|404) ;; *) echo "::error::Public apex WebFinger route failed (HTTP $apex_webfinger)."; cat "$tmp/apex-webfinger.json"; exit 1 ;; esac
               private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
               case "$private_status" in 401|403|404) ;; *) echo "::error::Canonical CDN allowed unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;; esac
-              echo "api.testagram.site and media.testagram.site identify the pinned services; private readiness, metrics and private-media boundaries are hidden."
+              echo "api.testagram.site, media.testagram.site and testagram.site identify their pinned services; apex redirects to www and WebFinger reaches Federation."
               exit 0
             fi
             sleep 10
           done
-          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics."
+          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics APEX_HEALTH=$apex_health APEX_ROOT=$apex_root APEX_WEBFINGER=$apex_webfinger."
           cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
           exit 1
 
-      - name: Automatically restore the previous Cloudflare deployment after failed smoke
-        if: failure() && steps.deploy_gateway.outcome == 'success' && steps.verify_gateway.outcome == 'failure'
-        env:
-          PREVIOUS_VERSIONS: ${{ steps.previous_deployment.outputs.versions }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          API=https://api.cloudflare.com/client/v4
-          body="$(jq -nc --argjson versions "$PREVIOUS_VERSIONS" '{
-            strategy:"percentage",
-            versions:$versions,
-            annotations:{"workers/message":"Automatic rollback after Testagram canonical-host smoke failure"}
-          }')"
-          result="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
-            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments" \
-            -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$body")"
-          jq -e '.success == true' <<<"$result" >/dev/null || {
-            echo "::error::Cloudflare rejected the automatic rollback."
-            jq -c '.errors // []' <<<"$result"
-            exit 1
-          }
-          active="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS \
-            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments?per_page=1&page=1" \
-            -H "Authorization: Bearer $CF_API_TOKEN")"
-          expected="$(jq -c 'sort_by(.version_id)' <<<"$PREVIOUS_VERSIONS")"
-          actual="$(jq -c '.result.deployments[0].versions | sort_by(.version_id)' <<<"$active")"
-          if [[ "$actual" != "$expected" ]]; then
-            echo "::error::Rollback request succeeded but the previous deployment split is not active."
-            echo "Expected previous deployment version split; active state differs (version IDs redacted)."
-            exit 1
-          fi
-          echo "Previous Cloudflare Worker deployment restored and verified."
-
+      # Do not automatically roll back the Worker after apex route cutover:
+      # the old version does not recognize testagram.site and would return 421
+      # while the exact apex route remains attached. The previous deployment
+      # snapshot is retained above for an intentional manual rollback.
       - name: Restore the previous R2 hostname owner if Go CDN cutover fails
         if: failure() && steps.preflight.outputs.r2_bucket != '' && steps.detach_r2_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
         shell: bash
@@ -390,4 +464,3 @@ jobs:
             exit 1;
           }
           echo "Previous R2 hostname ownership restored and verified; no bucket objects were changed."
-

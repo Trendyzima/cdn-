@@ -11,6 +11,13 @@ preview_urls = false
 pattern = "api.testagram.site/*"
 zone_name = "testagram.site"
 
+# testagram.site remains the Backend/Federation identity hostname. The Worker
+# sends it to the dedicated Caddy listener: ActivityPub stays on the apex,
+# while ordinary web paths receive the canonical redirect to www.
+[[routes]]
+pattern = "testagram.site/*"
+zone_name = "testagram.site"
+
 # media.testagram.site is already attached to this Worker as a Custom Domain.
 # Updating this script replaces the old R2-serving implementation in place.
 [[routes]]
