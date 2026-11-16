@@ -288,9 +288,10 @@ test("wakes a suspended InstaBox machine on real traffic and replays the origina
   let machineReads = 0;
   let startCalls = 0;
   let originalBody;
-  globalThis.fetch = async (request) => {
+  globalThis.fetch = async (request, init = {}) => {
     const url = typeof request === "string" ? request : request.url;
-    const method = typeof request === "string" ? "GET" : request.method;
+    const method = typeof request === "string" ? (init.method || "GET") : request.method;
+    const headers = typeof request === "string" ? new Headers(init.headers) : request.headers;
     if (url === "https://api.instabox.sh/v1/machines/m_test123") {
       machineReads += 1;
       const state = machineReads === 1
@@ -301,7 +302,7 @@ test("wakes a suspended InstaBox machine on real traffic and replays the origina
     if (url === "https://api.instabox.sh/v1/machines/m_test123/start") {
       startCalls += 1;
       assert.equal(method, "POST");
-      assert.ok(request.headers.get("idempotency-key").startsWith("testagram-edge-wake-m_test123-"));
+      assert.ok(headers.get("idempotency-key").startsWith("testagram-edge-wake-m_test123-"));
       return new Response(JSON.stringify({ id: "wake-operation-1" }), { status: 202 });
     }
     if (url === "https://api.instabox.sh/v1/operations/wake-operation-1") {
