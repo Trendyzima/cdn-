@@ -90,8 +90,8 @@ jobs:
                   raise SystemExit(f"{label} must use the InstaBox public hostname, not a literal IP")
           if len({urlparse(value).hostname for value in sys.argv[1:4]}) != 3:
               raise SystemExit("API_ORIGIN, CDN_ORIGIN and APEX_ORIGIN must use three different published port hostnames")
-          if not re.fullmatch(r"m_[a-z0-9]+", sys.argv[4]):
-              raise SystemExit("MACHINE_ID must be the exact InstaBox machine ID")
+          if not re.fullmatch(r"m_[a-z2-7]{26}", sys.argv[4]):
+              raise SystemExit("MACHINE_ID must match the exact InstaBox ID format m_ plus 26 lowercase base32 characters")
           PY
           machine_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/instabox-machine.json -w '%{http_code}' -H "X-API-Key: $INSTABOX_API_KEY" "https://api.instabox.sh/v1/machines/$MACHINE_ID" || true)"
           if [[ "$machine_status" != "200" ]] || ! jq -e '.state != null' /tmp/instabox-machine.json >/dev/null; then
