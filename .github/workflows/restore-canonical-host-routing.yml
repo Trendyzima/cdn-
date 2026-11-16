@@ -148,13 +148,20 @@ jobs:
             echo "::error::Cannot inspect all Worker routes; verify Zone Workers Routes Read/Write and review pagination."
             jq -c '.errors // []' <<<"$routes"; exit 1;
           }
-          broad="$(jq -r '.result[]? | select(.pattern=="*.testagram.site/*" or .pattern=="testagram.site/*") | .pattern' <<<"$routes")"
+          broad="$(jq -r '.result[]? | select(.pattern=="*.testagram.site/*") | .pattern' <<<"$routes")"
           if [[ -n "$broad" ]]; then
             echo "::error::A broad zone-wide Worker route could affect unrelated Testagram services. Review it manually before cutover:"
             printf '%s\n' "$broad"; exit 1;
           fi
 
-          for host in api.testagram.site media.testagram.site; do
+          pages_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/apex-pages-domain.json -w '%{http_code}' "$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/testagram.site" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+          if [[ "$pages_status" != "404" ]]; then
+            echo "::error::testagram.site must be detached from Cloudflare Pages before the Backend/Federation Worker route can own the apex (Pages API HTTP $pages_status)."
+            jq -c '{success,errors,messages,result}' /tmp/apex-pages-domain.json 2>/dev/null || true
+            exit 1
+          fi
+
+          for host in api.testagram.site media.testagram.site testagram.site; do
             owners="$(jq -r --arg host "$host" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | [.service,(.environment // "production")] | @tsv' <<<"$domains")"
             while IFS=$'\t' read -r service environment; do
               [[ -n "$service" ]] || continue
@@ -225,12 +232,17 @@ jobs:
             exit 1
           fi
 
+          apex_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$apex_dns" >/dev/null || {
+            echo "::error::testagram.site must have an existing proxied A/AAAA/CNAME record for its exact Worker Route. No DNS records will be changed."
+            jq -c '.errors // .result' <<<"$apex_dns"; exit 1;
+          }
           api_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
             echo "::error::api.testagram.site must have an existing proxied A/AAAA/CNAME record for its Worker Route. No DNS records will be changed."
             jq -c '.errors // .result' <<<"$api_dns"; exit 1;
           }
-          echo "Cloudflare zone, exact Worker ownership/routes and proxied API DNS passed preflight. No DNS records will be changed."
+          echo "Cloudflare zone, Pages apex detachment, exact Worker ownership/routes and proxied apex/API DNS passed preflight. No DNS records will be changed."
 
       - name: Test canonical gateway contract
         working-directory: cloudflare
@@ -293,7 +305,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloudflare
-          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}"
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}" --var "APEX_ORIGIN:${{ inputs.apex_origin }}"
 
       - name: Verify canonical public API and Go CDN identities
         id: verify_gateway
