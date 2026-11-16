@@ -332,6 +332,43 @@ test("wakes a suspended InstaBox machine on real traffic and replays the origina
   assert.equal(originalBody, payload);
 });
 
+test("tolerates an InstaBox start conflict when another wake is already in progress", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let machineReads = 0;
+  let startCalls = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123") {
+      machineReads += 1;
+      const state = machineReads === 1
+        ? { state: "suspended", runtime: { ready: false } }
+        : { state: "running", runtime: { ready: true } };
+      return new Response(JSON.stringify(state), { status: 200 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/start") {
+      startCalls += 1;
+      assert.equal(init.method, "POST");
+      return new Response(JSON.stringify({ error: "already_starting" }), { status: 409 });
+    }
+    if (url.startsWith(apiOrigin)) {
+      originCalls += 1;
+      if (originCalls === 1) return new Response("machine resuming", { status: 503 });
+      return new Response("awake", { status: 200 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "awake");
+  assert.equal(originCalls, 2);
+  assert.equal(machineReads, 2);
+  assert.equal(startCalls, 1);
+});
+
 test("wakes the machine but does not replay a non-idempotent POST without an idempotency key", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
