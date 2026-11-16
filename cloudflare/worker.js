@@ -152,7 +152,7 @@ async function wakeMachine(env) {
       const operationId = operation.id;
       if (operationId) {
         let operationSucceeded = false;
-        for (let attempt = 0; attempt < 12; attempt += 1) {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
           const status = await fetch(api + "/v1/operations/" + encodeURIComponent(operationId), {
             headers: auth,
           });
