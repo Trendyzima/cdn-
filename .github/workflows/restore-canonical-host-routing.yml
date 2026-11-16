@@ -20,6 +20,10 @@ on:
         description: "Verified public InstaBox HTTPS URL for the dedicated Caddy apex/Federation port 8443 (no path)"
         required: true
         type: string
+      machine_id:
+        description: "Exact InstaBox machine ID for testagramdb, reported by the Backend deployment"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -39,6 +43,8 @@ jobs:
       API_ORIGIN: ${{ inputs.api_origin }}
       CDN_ORIGIN: ${{ inputs.cdn_origin }}
       APEX_ORIGIN: ${{ inputs.apex_origin }}
+      MACHINE_ID: ${{ inputs.machine_id }}
+      INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
       CONFIRM_CANONICAL_HOST_ROUTING: ${{ inputs.confirm_canonical_host_routing }}
     steps:
       - uses: actions/checkout@v4
@@ -56,8 +62,9 @@ jobs:
           [[ "$CONFIRM_CANONICAL_HOST_ROUTING" == "true" ]] || { echo "::error::Set confirm_canonical_host_routing=true to authorize the production Worker deployment."; exit 1; }
           test -n "$CF_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN."; exit 1; }
           test -n "$CF_ACCOUNT_ID" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID."; exit 1; }
-          python3 - "$API_ORIGIN" "$CDN_ORIGIN" "$APEX_ORIGIN" <<'PY'
-          import ipaddress, sys
+          test -n "$INSTABOX_API_KEY" || { echo "::error::Missing INSTABOX_API_KEY repository secret for request-triggered machine recovery."; exit 1; }
+          python3 - "$API_ORIGIN" "$CDN_ORIGIN" "$APEX_ORIGIN" "$MACHINE_ID" <<'PY'
+          import ipaddress, re, sys
           from urllib.parse import urlparse
           for label, raw, canonical in (
               ("API_ORIGIN", sys.argv[1], "api.testagram.site"),
@@ -80,9 +87,17 @@ jobs:
                   pass
               else:
                   raise SystemExit(f"{label} must use the InstaBox public hostname, not a literal IP")
-          if len({urlparse(value).hostname for value in sys.argv[1:]}) != 3:
+          if len({urlparse(value).hostname for value in sys.argv[1:4]}) != 3:
               raise SystemExit("API_ORIGIN, CDN_ORIGIN and APEX_ORIGIN must use three different published port hostnames")
+          if not re.fullmatch(r"m_[a-z0-9]+", sys.argv[4]):
+              raise SystemExit("MACHINE_ID must be the exact InstaBox machine ID")
           PY
+          machine_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/instabox-machine.json -w '%{http_code}' -H "X-API-Key: $INSTABOX_API_KEY" "https://api.instabox.sh/v1/machines/$MACHINE_ID" || true)"
+          if [[ "$machine_status" != "200" ]] || ! jq -e '.id != null and .state != null' /tmp/instabox-machine.json >/dev/null; then
+            echo "::error::Could not verify the selected InstaBox machine with the supplied recovery credential (HTTP $machine_status)."
+            jq -c '{id,state,error}' /tmp/instabox-machine.json 2>/dev/null || true
+            exit 1
+          fi
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
 
@@ -308,6 +323,17 @@ jobs:
           echo "::error::R2 custom-domain binding did not detach; refusing Worker deployment."
           exit 1
 
+      - name: Store the InstaBox recovery credential as a Cloudflare Worker secret
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
+          printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
+
       - name: Deploy Worker gateway on canonical API and media hostnames
         id: deploy_gateway
         uses: cloudflare/wrangler-action@v3
@@ -315,7 +341,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloudflare
-          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}" --var "APEX_ORIGIN:${{ inputs.apex_origin }}"
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}" --var "APEX_ORIGIN:${{ inputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
 
       - name: Verify canonical public API and Go CDN identities
         id: verify_gateway
