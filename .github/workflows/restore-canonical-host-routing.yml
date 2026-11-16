@@ -274,7 +274,7 @@ jobs:
         working-directory: cloudflare
         run: npm test
 
-      - name: Capture the active Cloudflare deployment for rollback
+      - name: Capture the active Cloudflare deployment for emergency manual rollback
         id: previous_deployment
         shell: bash
         run: |
@@ -384,41 +384,10 @@ jobs:
           cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
           exit 1
 
-      - name: Automatically restore the previous Cloudflare deployment after failed smoke
-        if: failure() && steps.deploy_gateway.outcome == 'success' && steps.verify_gateway.outcome == 'failure'
-        env:
-          PREVIOUS_VERSIONS: ${{ steps.previous_deployment.outputs.versions }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          API=https://api.cloudflare.com/client/v4
-          body="$(jq -nc --argjson versions "$PREVIOUS_VERSIONS" '{
-            strategy:"percentage",
-            versions:$versions,
-            annotations:{"workers/message":"Automatic rollback after Testagram canonical-host smoke failure"}
-          }')"
-          result="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
-            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments" \
-            -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$body")"
-          jq -e '.success == true' <<<"$result" >/dev/null || {
-            echo "::error::Cloudflare rejected the automatic rollback."
-            jq -c '.errors // []' <<<"$result"
-            exit 1
-          }
-          active="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS \
-            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments?per_page=1&page=1" \
-            -H "Authorization: Bearer $CF_API_TOKEN")"
-          expected="$(jq -c 'sort_by(.version_id)' <<<"$PREVIOUS_VERSIONS")"
-          actual="$(jq -c '.result.deployments[0].versions | sort_by(.version_id)' <<<"$active")"
-          if [[ "$actual" != "$expected" ]]; then
-            echo "::error::Rollback request succeeded but the previous deployment split is not active."
-            echo "Expected previous deployment version split; active state differs (version IDs redacted)."
-            exit 1
-          fi
-          echo "Previous Cloudflare Worker deployment restored and verified."
-
+      # Do not automatically roll back the Worker after apex route cutover:
+      # the old version does not recognize testagram.site and would return 421
+      # while the exact apex route remains attached. The previous deployment
+      # snapshot is retained above for an intentional manual rollback.
       - name: Restore the previous R2 hostname owner if Go CDN cutover fails
         if: failure() && steps.preflight.outputs.r2_bucket != '' && steps.detach_r2_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
         shell: bash
