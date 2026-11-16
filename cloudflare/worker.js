@@ -134,6 +134,7 @@ async function wakeMachine(env) {
   try {
     machine = await readMachine();
     if (!machine || machine.state === "error") return false;
+    if (machine.state === "running" && machine.runtime?.ready === true) return true;
 
     if (machine.state !== "running") {
       const start = await fetch(machineUrl + "/start", {
