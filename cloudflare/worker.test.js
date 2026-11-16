@@ -324,10 +324,10 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
   assert.equal(originalBody, payload);
 });
 
-test("waits for an already-running lifecycle operation without issuing another start", async (t) => {
+test("follows the exact concurrent InstaBox resume operation without issuing another start", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
-  let machineReads = 0;
+  let operationReads = 0;
   globalThis.fetch = async (request, init = {}) => {
     const url = typeof request === "string" ? request : request.url;
     if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
@@ -335,12 +335,16 @@ test("waits for an already-running lifecycle operation without issuing another s
         error: { code: "operation_conflict", operationId: "existing-operation" },
       }), { status: 409 });
     }
-    if (url === "https://api.instabox.sh/v1/machines/m_test123") {
-      machineReads += 1;
-      const state = machineReads === 1
-        ? { state: "resuming", runtime: { ready: false } }
-        : { state: "running", runtime: { ready: true } };
-      return new Response(JSON.stringify(state), { status: 200 });
+    if (url === "https://api.instabox.sh/v1/operations/existing-operation") {
+      operationReads += 1;
+      const operation = operationReads === 1
+        ? { type: "resume", state: "running" }
+        : {
+            type: "resume",
+            state: "succeeded",
+            machine: { state: "running", runtime: { ready: true } },
+          };
+      return new Response(JSON.stringify(operation), { status: 200 });
     }
     if (url === "https://api.instabox.sh/v1/machines/m_test123/start") {
       throw new Error("must not issue a second start");
@@ -359,7 +363,7 @@ test("waits for an already-running lifecycle operation without issuing another s
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "awake");
   assert.equal(originCalls, 2);
-  assert.equal(machineReads, 2);
+  assert.equal(operationReads, 2);
 });
 
 test("does not override a manually suspended or stopped machine", async (t) => {
