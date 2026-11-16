@@ -152,7 +152,7 @@ gateway workflow above is the sole production Worker deployment path.
 
 Backend is the authority for identity, media ownership, visibility and
 viewer authorization. Appwrite is used for identity/session verification;
-there is no Supabase runtime identity dependency. Data Centre owns storage
+Backend remains the sole product authorization authority. Data Centre owns storage
 placement, replication, repair and deletion. The CDN is not a product API or
 authorization authority.
 
