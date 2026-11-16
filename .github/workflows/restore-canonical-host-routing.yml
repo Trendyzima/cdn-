@@ -275,7 +275,7 @@ jobs:
             echo "::error::api.testagram.site must have an existing proxied A/AAAA/CNAME record for its Worker Route. No DNS records will be changed."
             jq -c '.errors // .result' <<<"$api_dns"; exit 1;
           }
-          echo "Cloudflare zone, Pages apex detachment, exact Worker ownership/routes and proxied apex/API DNS passed preflight. No DNS records will be changed."
+          echo "Cloudflare zone, exact Pages apex ownership, Worker ownership/routes and proxied apex/API DNS passed preflight. Only the verified Pages apex association may be detached during the confirmed cutover; DNS records will not be changed."
 
       - name: Test canonical gateway contract
         working-directory: cloudflare
