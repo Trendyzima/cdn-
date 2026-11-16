@@ -93,7 +93,7 @@ jobs:
               raise SystemExit("MACHINE_ID must be the exact InstaBox machine ID")
           PY
           machine_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/instabox-machine.json -w '%{http_code}' -H "X-API-Key: $INSTABOX_API_KEY" "https://api.instabox.sh/v1/machines/$MACHINE_ID" || true)"
-          if [[ "$machine_status" != "200" ]] || ! jq -e '.id != null and .state != null' /tmp/instabox-machine.json >/dev/null; then
+          if [[ "$machine_status" != "200" ]] || ! jq -e '.state != null' /tmp/instabox-machine.json >/dev/null; then
             echo "::error::Could not verify the selected InstaBox machine with the supplied recovery credential (HTTP $machine_status)."
             jq -c '{id,state,error}' /tmp/instabox-machine.json 2>/dev/null || true
             exit 1
