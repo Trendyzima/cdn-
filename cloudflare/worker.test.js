@@ -282,10 +282,60 @@ test("protocol-relative paths cannot escape the configured origin", async (t) =>
   assert.equal(new URL(upstream.url).search, "?x=1");
 });
 
-test("returns 502 on upstream transport failure", async (t) => {
+test("wakes a suspended InstaBox machine on real traffic and replays the original request", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let machineReads = 0;
+  let startCalls = 0;
+  let originalBody;
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    const method = typeof request === "string" ? "GET" : request.method;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123") {
+      machineReads += 1;
+      const state = machineReads === 1
+        ? { state: "suspended", runtime: { ready: false } }
+        : { state: "running", runtime: { ready: true } };
+      return new Response(JSON.stringify(state), { status: 200 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/start") {
+      startCalls += 1;
+      assert.equal(method, "POST");
+      assert.ok(request.headers.get("idempotency-key").startsWith("testagram-edge-wake-m_test123-"));
+      return new Response(JSON.stringify({ id: "wake-operation-1" }), { status: 202 });
+    }
+    if (url === "https://api.instabox.sh/v1/operations/wake-operation-1") {
+      return new Response(JSON.stringify({ state: "succeeded" }), { status: 200 });
+    }
+    if (url.startsWith(apiOrigin)) {
+      originCalls += 1;
+      if (originCalls === 1) return new Response("machine asleep", { status: 503 });
+      originalBody = await request.clone().text();
+      return new Response("created after wake", { status: 201 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const payload = JSON.stringify({ text: "preserve this post body" });
+  const response = await worker.fetch(new Request("https://api.testagram.site/api/posts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: payload,
+  }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
+
+  assert.equal(response.status, 201);
+  assert.equal(await response.text(), "created after wake");
+  assert.equal(originCalls, 2);
+  assert.equal(startCalls, 1);
+  assert.equal(machineReads, 2);
+  assert.equal(originalBody, payload);
+});
+
+test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {
   restoreFetch(t);
   globalThis.fetch = async () => { throw new Error("network failure"); };
   const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env());
-  assert.equal(response.status, 502);
-  assert.equal((await response.json()).error, "upstream_unavailable");
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "machine_wake_failed");
+  assert.equal(response.headers.get("retry-after"), "5");
 });
