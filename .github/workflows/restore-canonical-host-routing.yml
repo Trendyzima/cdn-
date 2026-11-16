@@ -1,10 +1,10 @@
-name: Restore canonical Testagram API and Go CDN host routing
+name: Restore canonical Testagram API, Go CDN and apex federation routing
 
 on:
   workflow_dispatch:
     inputs:
       confirm_canonical_host_routing:
-        description: "Explicitly authorize updating the production Cloudflare Worker for api.testagram.site and media.testagram.site"
+        description: "Explicitly authorize updating the production Cloudflare Worker for API, media and apex federation hostnames"
         required: true
         type: boolean
         default: false
@@ -14,6 +14,10 @@ on:
         type: string
       cdn_origin:
         description: "Verified public InstaBox HTTPS URL for the Go CDN port 8081 (no path)"
+        required: true
+        type: string
+      apex_origin:
+        description: "Verified public InstaBox HTTPS URL for the dedicated Caddy apex/Federation port 8443 (no path)"
         required: true
         type: string
 
@@ -26,7 +30,7 @@ concurrency:
 
 jobs:
   reconcile:
-    name: Deploy canonical API and Go CDN gateway
+    name: Deploy canonical API, media and apex federation gateway
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -34,6 +38,7 @@ jobs:
       CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       API_ORIGIN: ${{ inputs.api_origin }}
       CDN_ORIGIN: ${{ inputs.cdn_origin }}
+      APEX_ORIGIN: ${{ inputs.apex_origin }}
       CONFIRM_CANONICAL_HOST_ROUTING: ${{ inputs.confirm_canonical_host_routing }}
     steps:
       - uses: actions/checkout@v4
@@ -51,12 +56,13 @@ jobs:
           [[ "$CONFIRM_CANONICAL_HOST_ROUTING" == "true" ]] || { echo "::error::Set confirm_canonical_host_routing=true to authorize the production Worker deployment."; exit 1; }
           test -n "$CF_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN."; exit 1; }
           test -n "$CF_ACCOUNT_ID" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID."; exit 1; }
-          python3 - "$API_ORIGIN" "$CDN_ORIGIN" <<'PY'
+          python3 - "$API_ORIGIN" "$CDN_ORIGIN" "$APEX_ORIGIN" <<'PY'
           import ipaddress, sys
           from urllib.parse import urlparse
           for label, raw, canonical in (
               ("API_ORIGIN", sys.argv[1], "api.testagram.site"),
               ("CDN_ORIGIN", sys.argv[2], "media.testagram.site"),
+              ("APEX_ORIGIN", sys.argv[3], "testagram.site"),
           ):
               u = urlparse(raw)
               if (u.scheme != "https" or not u.hostname or u.username or u.password
@@ -74,8 +80,8 @@ jobs:
                   pass
               else:
                   raise SystemExit(f"{label} must use the InstaBox public hostname, not a literal IP")
-          if urlparse(sys.argv[1]).hostname == urlparse(sys.argv[2]).hostname:
-              raise SystemExit("API_ORIGIN and CDN_ORIGIN must be different published port hostnames")
+          if len({urlparse(value).hostname for value in sys.argv[1:]}) != 3:
+              raise SystemExit("API_ORIGIN, CDN_ORIGIN and APEX_ORIGIN must use three different published port hostnames")
           PY
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
@@ -109,7 +115,305 @@ jobs:
             401|403|404) ;;
             *) echo "::error::Go CDN origin did not deny unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;;
           esac
-          echo "Both origins identify the correct services; private readiness/metrics are hidden and private-media denial passed."
+          apex_health="$(curl -sS --connect-timeout 5 --max-time 20 -o "$tmp/apex-health.json" -w '%{http_code}' "$APEX_ORIGIN/_testagram/edge-health" || true)"
+          apex_root="$(curl -sS --connect-timeout 5 --max-time 20 -D "$tmp/apex-root.headers" -o /dev/null -w '%{http_code}' "$APEX_ORIGIN/" || true)"
+          apex_webfinger="$(curl -sS --connect-timeout 5 --max-time 20 -o "$tmp/apex-webfinger.json" -w '%{http_code}' "$APEX_ORIGIN/.well-known/webfinger?resource=acct:nonexistent-probe@invalid.testagram.site" || true)"
+          if [[ "$apex_health" != "200" ]] || ! jq -e '.ok == true and .service == "testagram-apex-edge"' "$tmp/apex-health.json" >/dev/null; then
+            echo "::error::APEX_ORIGIN is not serving the expected Caddy edge identity (HTTP $apex_health)."
+            cat "$tmp/apex-health.json" 2>/dev/null || true
+            exit 1
+          fi
+          if [[ "$apex_root" != "308" ]] || ! grep -Eiq '^location:[[:space:]]*https://www\.testagram\.site/?[[:space:]]*
+      - name: Preflight Cloudflare zone and existing hostname ownership
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zones="$(curl --retry 2 --retry-all-errors -fsS "$API/zones?name=testagram.site&status=active" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | length == 1)' <<<"$zones" >/dev/null || {
+            echo "::error::Could not identify exactly one active testagram.site zone; verify Zone Read."
+            jq -c '.errors // []' <<<"$zones"; exit 1;
+          }
+          zone_id="$(jq -r '.result[0].id' <<<"$zones")"
+          echo "zone_id=$zone_id" >> "$GITHUB_OUTPUT"
+
+          domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$domains" >/dev/null || {
+            echo "::error::Cannot inspect all Worker custom domains; verify Workers Scripts Read/Write and review pagination."
+            jq -c '.errors // []' <<<"$domains"; exit 1;
+          }
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$routes" >/dev/null || {
+            echo "::error::Cannot inspect all Worker routes; verify Zone Workers Routes Read/Write and review pagination."
+            jq -c '.errors // []' <<<"$routes"; exit 1;
+          }
+          broad="$(jq -r '.result[]? | select(.pattern=="*.testagram.site/*" or .pattern=="testagram.site/*") | .pattern' <<<"$routes")"
+          if [[ -n "$broad" ]]; then
+            echo "::error::A broad zone-wide Worker route could affect unrelated Testagram services. Review it manually before cutover:"
+            printf '%s\n' "$broad"; exit 1;
+          fi
+
+          for host in api.testagram.site media.testagram.site; do
+            owners="$(jq -r --arg host "$host" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone) | [.service,(.environment // "production")] | @tsv' <<<"$domains")"
+            while IFS=$'\t' read -r service environment; do
+              [[ -n "$service" ]] || continue
+              if [[ "$service" != "testagram-cdn" || ( "$environment" != "production" && "$environment" != "" ) ]]; then
+                echo "::error::Refusing to replace $host because it is attached to unexpected Worker service/environment: $service/$environment."
+                exit 1
+              fi
+            done <<<"$owners"
+
+            exact_routes="$(jq -r --arg host "$host" '.result[]? | select(.pattern==($host+"/*")) | [.script,.id] | @tsv' <<<"$routes")"
+            while IFS=$'\t' read -r script route_id; do
+              [[ -n "$route_id" ]] || continue
+              if [[ "$script" != "testagram-cdn" ]]; then
+                echo "::error::Refusing to replace $host because exact Worker route belongs to $script."
+                exit 1
+              fi
+            done <<<"$exact_routes"
+
+          done
+
+          # Discover the current R2 custom-domain owner instead of assuming the
+          # hostname is already attached to the Worker.
+          buckets="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/r2/buckets?per_page=1000" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.cursor // "") == "")' <<<"$buckets" >/dev/null || {
+            echo "::error::Could not enumerate every R2 bucket; verify Workers R2 Storage Read/Write permissions and bucket pagination."
+            jq -c '.errors // []' <<<"$buckets"; exit 1;
+          }
+          r2_match_file="$(mktemp)"
+          trap 'rm -f "$r2_match_file"' EXIT
+          while IFS= read -r bucket; do
+            [[ -n "$bucket" ]] || continue
+            custom="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$bucket/domains/custom" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$custom" >/dev/null || {
+              echo "::error::Could not inspect R2 custom-domain ownership for a bucket; refusing cutover."
+              jq -c '.errors // []' <<<"$custom"; exit 1;
+            }
+            jq -c --arg bucket "$bucket" '.domains[]? | select(.domain=="media.testagram.site") | . + {bucket:$bucket}' <<<"$custom" >> "$r2_match_file"
+          done < <(jq -r '.result.buckets[]?.name' <<<"$buckets")
+          r2_count="$(wc -l < "$r2_match_file" | tr -d ' ')"
+          [[ "$r2_count" -le 1 ]] || {
+            echo "::error::media.testagram.site is attached to multiple R2 buckets; refusing ambiguous ownership transfer."
+            exit 1;
+          }
+          worker_domain="$(jq -c --arg host "media.testagram.site" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone)' <<<"$domains" | head -n 1)"
+          if [[ "$r2_count" == "1" ]]; then
+            r2_owner="$(cat "$r2_match_file")"
+            [[ "$(jq -r '.status.ownership // empty' <<<"$r2_owner")" == "active" && "$(jq -r '.status.ssl // empty' <<<"$r2_owner")" == "active" && "$(jq -r '.enabled // false' <<<"$r2_owner")" == "true" ]] || {
+              echo "::error::R2 custom domain ownership, TLS or enabled state is not healthy; refusing cutover."
+              exit 1;
+            }
+            [[ -z "$worker_domain" ]] || {
+              echo "::error::media.testagram.site is simultaneously listed as an R2 domain and Worker custom domain; refusing ambiguous ownership."
+              exit 1;
+            }
+            echo "r2_bucket=$(jq -r '.bucket' <<<"$r2_owner")" >> "$GITHUB_OUTPUT"
+            echo "r2_domain=$(jq -c '{domain,enabled,zoneId,ciphers,minTLS} | with_entries(select(.value != null))' <<<"$r2_owner" | base64 -w0)" >> "$GITHUB_OUTPUT"
+            echo "media.testagram.site is currently owned by one active R2 bucket; a controlled Worker transfer is required."
+          elif [[ -n "$worker_domain" ]]; then
+            [[ "$(jq -r '.service' <<<"$worker_domain")" == "testagram-cdn" ]] || {
+              echo "::error::media.testagram.site is attached to an unexpected Worker; refusing cutover."
+              exit 1;
+            }
+            echo "r2_bucket=" >> "$GITHUB_OUTPUT"
+            echo "r2_domain=" >> "$GITHUB_OUTPUT"
+            echo "media.testagram.site is already attached to the canonical testagram-cdn Worker."
+          else
+            echo "::error::media.testagram.site has no verifiable R2 or canonical Worker owner; refusing to overwrite routing."
+            exit 1
+          fi
+
+          api_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
+            echo "::error::api.testagram.site must have an existing proxied A/AAAA/CNAME record for its Worker Route. No DNS records will be changed."
+            jq -c '.errors // .result' <<<"$api_dns"; exit 1;
+          }
+          echo "Cloudflare zone, exact Worker ownership/routes and proxied API DNS passed preflight. No DNS records will be changed."
+
+      - name: Test canonical gateway contract
+        working-directory: cloudflare
+        run: npm test
+
+      - name: Capture the active Cloudflare deployment for rollback
+        id: previous_deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          deployments="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments?per_page=100&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result.deployments | length >= 1)' <<<"$deployments" >/dev/null || {
+            echo "::error::Cannot capture the current Cloudflare Worker deployment; refusing a cutover without rollback."
+            jq -c '.errors // []' <<<"$deployments"
+            exit 1
+          }
+          versions="$(jq -c '.result.deployments[0].versions' <<<"$deployments")"
+          jq -e 'type == "array" and length > 0 and all(.[]; (.version_id | type == "string" and length > 0) and (.percentage | type == "number" and . > 0))' <<<"$versions" >/dev/null || {
+            echo "::error::The active Cloudflare deployment has no valid version split; refusing a cutover without rollback."
+            exit 1
+          }
+          jq -e '([.[].percentage] | add) == 100' <<<"$versions" >/dev/null || {
+            echo "::error::The active Cloudflare deployment does not route exactly 100 percent of traffic; refusing an unsafe rollback snapshot."
+            exit 1
+          }
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "Captured the active Cloudflare deployment version split for rollback."
+
+      - name: Release the existing R2 custom-domain binding for Go CDN ownership
+        id: detach_r2_domain
+        if: steps.preflight.outputs.r2_bucket != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          BUCKET="${{ steps.preflight.outputs.r2_bucket }}"
+          curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom/media.testagram.site" \
+            -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          for attempt in $(seq 1 30); do
+            state="$(curl --retry 2 --retry-all-errors -fsS \
+              "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+              -H "Authorization: Bearer $CF_API_TOKEN")"
+            if ! jq -e '.domains[]? | select(.domain=="media.testagram.site")' <<<"$state" >/dev/null; then
+              echo "R2 custom-domain binding released; bucket and objects remain untouched."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::R2 custom-domain binding did not detach; refusing Worker deployment."
+          exit 1
+
+      - name: Deploy Worker gateway on canonical API and media hostnames
+        id: deploy_gateway
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}"
+
+      - name: Verify canonical public API and Go CDN identities
+        id: verify_gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          for attempt in $(seq 1 30); do
+            api_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/api.headers" -o "$tmp/api.json" -w '%{http_code}' "https://api.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            api_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
+            api_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            tv_catalog_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/tv-catalog" -w '%{http_code}' "https://api.testagram.site/internal/tv/catalog?release_probe=$GITHUB_RUN_ID" || true)"
+            media_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/media.headers" -o "$tmp/media.json" -w '%{http_code}' "https://media.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            media_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
+            media_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" && "$tv_catalog_status" == "401" ]] &&
+               grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" &&
+               jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
+               [[ "$media_status" == "200" && "$media_ready" == "404" && "$media_metrics" == "404" ]] &&
+               grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/media.headers" &&
+               grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-15-private-health-listener-v1[[:space:]]*$' "$tmp/media.headers" &&
+               jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null; then
+              private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
+              case "$private_status" in 401|403|404) ;; *) echo "::error::Canonical CDN allowed unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;; esac
+              echo "api.testagram.site and media.testagram.site identify the pinned services; private readiness, metrics and private-media boundaries are hidden."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics."
+          cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
+          exit 1
+
+      - name: Automatically restore the previous Cloudflare deployment after failed smoke
+        if: failure() && steps.deploy_gateway.outcome == 'success' && steps.verify_gateway.outcome == 'failure'
+        env:
+          PREVIOUS_VERSIONS: ${{ steps.previous_deployment.outputs.versions }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          body="$(jq -nc --argjson versions "$PREVIOUS_VERSIONS" '{
+            strategy:"percentage",
+            versions:$versions,
+            annotations:{"workers/message":"Automatic rollback after Testagram canonical-host smoke failure"}
+          }')"
+          result="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body")"
+          jq -e '.success == true' <<<"$result" >/dev/null || {
+            echo "::error::Cloudflare rejected the automatic rollback."
+            jq -c '.errors // []' <<<"$result"
+            exit 1
+          }
+          active="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments?per_page=1&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          expected="$(jq -c 'sort_by(.version_id)' <<<"$PREVIOUS_VERSIONS")"
+          actual="$(jq -c '.result.deployments[0].versions | sort_by(.version_id)' <<<"$active")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Rollback request succeeded but the previous deployment split is not active."
+            echo "Expected previous deployment version split; active state differs (version IDs redacted)."
+            exit 1
+          fi
+          echo "Previous Cloudflare Worker deployment restored and verified."
+
+      - name: Restore the previous R2 hostname owner if Go CDN cutover fails
+        if: failure() && steps.preflight.outputs.r2_bucket != '' && steps.detach_r2_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          BUCKET="${{ steps.preflight.outputs.r2_bucket }}"
+          DOMAIN_JSON="$(echo '${{ steps.preflight.outputs.r2_domain }}' | base64 -d)"
+          workers="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          worker_id="$(jq -r '.result[]? | select(.hostname=="media.testagram.site" and .service=="testagram-cdn") | .id' <<<"$workers" | head -n 1)"
+          if [[ -n "$worker_id" ]]; then
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE \
+              "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$worker_id" \
+              -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          fi
+          current_r2="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          if jq -e '.domains[]? | select(.domain=="media.testagram.site")' <<<"$current_r2" >/dev/null; then
+            echo "Previous R2 binding is already present; no restore POST needed."
+            exit 0
+          fi
+          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" -d "$DOMAIN_JSON")"
+          jq -e '.success == true' <<<"$restored" >/dev/null || {
+            echo "::error::Automatic Worker-to-R2 rollback failed. Restore media.testagram.site to bucket $BUCKET manually using the captured R2 domain settings."
+            jq -c '.errors // []' <<<"$restored"; exit 1;
+          }
+          verify="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom/media.testagram.site" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and .result.domain=="media.testagram.site" and .result.enabled==true' <<<"$verify" >/dev/null || {
+            echo "::error::R2 binding restore was accepted but could not be verified."
+            exit 1;
+          }
+          echo "Previous R2 hostname ownership restored and verified; no bucket objects were changed."
+
+ "$tmp/apex-root.headers"; then
+            echo "::error::APEX_ORIGIN root does not redirect to https://www.testagram.site (HTTP $apex_root)."
+            cat "$tmp/apex-root.headers"
+            exit 1
+          fi
+          case "$apex_webfinger" in
+            200|400|404) ;;
+            *) echo "::error::APEX_ORIGIN WebFinger path failed to reach Federation safely (HTTP $apex_webfinger)."; cat "$tmp/apex-webfinger.json" 2>/dev/null || true; exit 1 ;;
+          esac
+          echo "API, CDN and apex origins identify the expected services; private API/CDN health and media boundaries are preserved."
 
       - name: Preflight Cloudflare zone and existing hostname ownership
         id: preflight
