@@ -1,6 +1,7 @@
 const HOSTS = Object.freeze({
   "api.testagram.site": "API_ORIGIN",
   "media.testagram.site": "CDN_ORIGIN",
+  "testagram.site": "APEX_ORIGIN",
 });
 const PRIVATE_API_PATHS = new Set(["/readyz", "/metrics"]);
 const PRIVATE_MEDIA_PATHS = new Set(["/readyz", "/metrics"]);
