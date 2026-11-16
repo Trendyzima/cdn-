@@ -169,7 +169,7 @@ async function wakeMachine(env) {
       }
     }
 
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
       machine = await readMachine();
       if (machine?.state === "running" && machine?.runtime?.ready === true) return true;
       if (machine?.state === "error") return false;
