@@ -282,35 +282,28 @@ test("protocol-relative paths cannot escape the configured origin", async (t) =>
   assert.equal(new URL(upstream.url).search, "?x=1");
 });
 
-test("wakes a suspended InstaBox machine on real traffic and replays the original request", async (t) => {
+test("uses the documented InstaBox idle-wake endpoint and replays an idempotent request", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
-  let machineReads = 0;
-  let startCalls = 0;
+  let wakeCalls = 0;
   let originalBody;
   globalThis.fetch = async (request, init = {}) => {
     const url = typeof request === "string" ? request : request.url;
     const method = typeof request === "string" ? (init.method || "GET") : request.method;
     const headers = typeof request === "string" ? new Headers(init.headers) : request.headers;
-    if (url === "https://api.instabox.sh/v1/machines/m_test123") {
-      machineReads += 1;
-      const state = machineReads === 1
-        ? { state: "suspended", runtime: { ready: false } }
-        : { state: "running", runtime: { ready: true } };
-      return new Response(JSON.stringify(state), { status: 200 });
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      assert.equal(method, "POST");
+      assert.equal(headers.get("idempotency-key"), null);
+      assert.deepEqual(await new Response(init.body).json(), {});
+      return new Response(JSON.stringify({ state: "running", runtime: { ready: true } }), { status: 200 });
     }
     if (url === "https://api.instabox.sh/v1/machines/m_test123/start") {
-      startCalls += 1;
-      assert.equal(method, "POST");
-      assert.ok(headers.get("idempotency-key").startsWith("testagram-edge-wake-m_test123-"));
-      return new Response(JSON.stringify({ id: "wake-operation-1" }), { status: 202 });
-    }
-    if (url === "https://api.instabox.sh/v1/operations/wake-operation-1") {
-      return new Response(JSON.stringify({ state: "succeeded" }), { status: 200 });
+      throw new Error("wake must never use /start for an idle-suspended machine");
     }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
-      if (originCalls === 1) return new Response("machine asleep", { status: 503 });
+      if (originCalls === 1) return new Response("machine waking", { status: 503 });
       originalBody = await request.clone().text();
       return new Response("created after wake", { status: 201 });
     }
@@ -327,29 +320,30 @@ test("wakes a suspended InstaBox machine on real traffic and replays the origina
   assert.equal(response.status, 201);
   assert.equal(await response.text(), "created after wake");
   assert.equal(originCalls, 2);
-  assert.equal(startCalls, 1);
-  assert.equal(machineReads, 2);
+  assert.equal(wakeCalls, 1);
   assert.equal(originalBody, payload);
 });
 
-test("tolerates an InstaBox start conflict when another wake is already in progress", async (t) => {
+test("waits for an already-running lifecycle operation without issuing another start", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
   let machineReads = 0;
-  let startCalls = 0;
   globalThis.fetch = async (request, init = {}) => {
     const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      return new Response(JSON.stringify({
+        error: { code: "operation_conflict", operationId: "existing-operation" },
+      }), { status: 409 });
+    }
     if (url === "https://api.instabox.sh/v1/machines/m_test123") {
       machineReads += 1;
       const state = machineReads === 1
-        ? { state: "suspended", runtime: { ready: false } }
+        ? { state: "resuming", runtime: { ready: false } }
         : { state: "running", runtime: { ready: true } };
       return new Response(JSON.stringify(state), { status: 200 });
     }
     if (url === "https://api.instabox.sh/v1/machines/m_test123/start") {
-      startCalls += 1;
-      assert.equal(init.method, "POST");
-      return new Response(JSON.stringify({ error: "already_starting" }), { status: 409 });
+      throw new Error("must not issue a second start");
     }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
@@ -366,17 +360,45 @@ test("tolerates an InstaBox start conflict when another wake is already in progr
   assert.equal(await response.text(), "awake");
   assert.equal(originCalls, 2);
   assert.equal(machineReads, 2);
-  assert.equal(startCalls, 1);
 });
 
-test("wakes the machine but does not replay a non-idempotent POST without an idempotency key", async (t) => {
+test("does not override a manually suspended or stopped machine", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
-  let machineReads = 0;
+  let wakeCalls = 0;
+  let startCalls = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return new Response(JSON.stringify({ error: { code: "machine_not_running" } }), { status: 409 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/start") startCalls += 1;
+    if (url.startsWith(apiOrigin)) {
+      originCalls += 1;
+      return new Response("machine asleep", { status: 503 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "machine_wake_failed");
+  assert.equal(originCalls, 1);
+  assert.equal(wakeCalls, 1);
+  assert.equal(startCalls, 0);
+});
+
+test("does not replay a non-idempotent POST after waking the machine", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let wakeCalls = 0;
   globalThis.fetch = async (request) => {
     const url = typeof request === "string" ? request : request.url;
-    if (url === "https://api.instabox.sh/v1/machines/m_test123") {
-      machineReads += 1;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
       return new Response(JSON.stringify({ state: "running", runtime: { ready: true } }), { status: 200 });
     }
     if (url.startsWith(apiOrigin)) {
@@ -393,7 +415,7 @@ test("wakes the machine but does not replay a non-idempotent POST without an ide
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error, "machine_awake_retry_required");
   assert.equal(originCalls, 1);
-  assert.equal(machineReads, 1);
+  assert.equal(wakeCalls, 1);
 });
 
 test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {
