@@ -147,7 +147,7 @@ async function wakeMachine(env) {
     const failure = await wake.json().catch(() => ({}));
     if (failure?.error?.code !== "operation_conflict") return false;
 
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
       const response = await fetch(machineUrl, { headers: auth });
       if (!response.ok) return false;
       const machine = await response.json();
