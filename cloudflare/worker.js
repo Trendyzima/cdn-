@@ -140,19 +140,33 @@ async function wakeMachine(env) {
       return machine?.state === "running" && machine?.runtime?.ready === true;
     }
 
-    // A concurrent lifecycle operation may already be resuming the machine.
-    // Only wait through that explicit conflict; manual pause/stop, cooldown,
-    // quota, auth and capacity errors fail closed without overriding policy.
+    // A concurrent start/resume may already be queued. Follow that exact
+    // operation rather than guessing from a transient machine state (which can
+    // still say "suspended" while a resume operation is queued).
     if (wake.status !== 409) return false;
     const failure = await wake.json().catch(() => ({}));
-    if (failure?.error?.code !== "operation_conflict") return false;
+    const operationId = failure?.error?.code === "operation_conflict"
+      ? failure.error.operationId
+      : null;
+    if (typeof operationId !== "string" || !operationId) return false;
 
+    const operationUrl = api + "/v1/operations/" + encodeURIComponent(operationId);
     for (let attempt = 0; attempt < 40; attempt += 1) {
-      const response = await fetch(machineUrl, { headers: auth });
+      const response = await fetch(operationUrl, { headers: auth });
       if (!response.ok) return false;
-      const machine = await response.json();
-      if (machine?.state === "running" && machine?.runtime?.ready === true) return true;
-      if (["stopped", "suspended", "error", "deleted"].includes(machine?.state)) return false;
+      const operation = await response.json();
+      if (!["resume", "start"].includes(operation?.type)) return false;
+      if (operation.state === "failed") return false;
+      if (operation.state === "succeeded") {
+        let machine = operation.machine;
+        if (!machine) {
+          const current = await fetch(machineUrl, { headers: auth });
+          if (!current.ok) return false;
+          machine = await current.json();
+        }
+        return machine?.state === "running" && machine?.runtime?.ready === true;
+      }
+      if (!["queued", "running"].includes(operation.state)) return false;
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   } catch {
