@@ -148,25 +148,29 @@ async function wakeMachine(env) {
         },
         body: "{}",
       });
-      if (!start.ok) return false;
-      const operation = await start.json();
-      const operationId = operation.id;
-      if (operationId) {
-        let operationSucceeded = false;
-        for (let attempt = 0; attempt < 8; attempt += 1) {
-          const status = await fetch(api + "/v1/operations/" + encodeURIComponent(operationId), {
-            headers: auth,
-          });
-          if (!status.ok) return false;
-          const current = await status.json();
-          if (current.state === "succeeded") {
-            operationSucceeded = true;
-            break;
+      // A concurrent edge request or InstaBox's own resume path may have
+      // started the machine first. If start returns a conflict, continue with
+      // readiness polling instead of treating that race as a hard failure.
+      if (start.ok) {
+        const operation = await start.json();
+        const operationId = operation.id;
+        if (operationId) {
+          let operationSucceeded = false;
+          for (let attempt = 0; attempt < 8; attempt += 1) {
+            const status = await fetch(api + "/v1/operations/" + encodeURIComponent(operationId), {
+              headers: auth,
+            });
+            if (!status.ok) return false;
+            const current = await status.json();
+            if (current.state === "succeeded") {
+              operationSucceeded = true;
+              break;
+            }
+            if (current.state === "failed") return false;
+            await new Promise((resolve) => setTimeout(resolve, 1000));
           }
-          if (current.state === "failed") return false;
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          if (!operationSucceeded) return false;
         }
-        if (!operationSucceeded) return false;
       }
     }
 
