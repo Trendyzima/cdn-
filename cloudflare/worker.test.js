@@ -472,7 +472,9 @@ test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) =>
     throw new Error("unexpected fetch: " + url);
   };
 
-  const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env({
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz", {
+    headers: { origin: "https://testagram.site" },
+  }), env({
     MACHINE_ID: "m_test123",
     INSTABOX_API_KEY: "ci-test-key",
   }));
@@ -481,6 +483,10 @@ test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) =>
   assert.equal((await response.json()).error, "machine_wake_failed");
   assert.equal(response.headers.get("retry-after"), "120");
   assert.equal(response.headers.get("x-testagram-recovery"), "attempted");
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://testagram.site");
+  const exposedHeaders = response.headers.get("access-control-expose-headers").toLowerCase();
+  assert.match(exposedHeaders, /retry-after/);
+  assert.match(exposedHeaders, /x-testagram-recovery/);
   assert.equal(originCalls, 1);
   assert.equal(wakeCalls, 1);
 });
