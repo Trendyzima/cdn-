@@ -15,6 +15,90 @@ function restoreFetch(t) {
   t.after(() => { globalThis.fetch = original; });
 }
 
+test("answers approved browser preflights at the edge without waking the machine", async (t) => {
+  restoreFetch(t);
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization,content-type,idempotency-key",
+    },
+  }), env());
+
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://testagram.site");
+  assert.match(response.headers.get("access-control-allow-methods"), /POST/);
+  const allowedHeaders = response.headers.get("access-control-allow-headers").toLowerCase();
+  assert.match(allowedHeaders, /authorization/);
+  assert.match(allowedHeaders, /content-type/);
+  assert.match(allowedHeaders, /idempotency-key/);
+  assert.equal(response.headers.get("access-control-max-age"), "600");
+  assert.equal(fetches, 0);
+});
+
+test("rejects unapproved or unsupported browser preflights without contacting an origin", async (t) => {
+  restoreFetch(t);
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
+
+  const unapprovedOrigin = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://evil.example",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization",
+    },
+  }), env());
+  assert.equal(unapprovedOrigin.status, 403);
+  assert.equal(unapprovedOrigin.headers.get("access-control-allow-origin"), null);
+
+  const unapprovedHeader = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "x-evil-header",
+    },
+  }), env());
+  assert.equal(unapprovedHeader.status, 403);
+  assert.equal(unapprovedHeader.headers.get("access-control-allow-origin"), null);
+
+  const unsupportedMethod = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "PATCH",
+    },
+  }), env());
+  assert.equal(unsupportedMethod.status, 405);
+  assert.equal(fetches, 0);
+});
+
+test("leaves media-host preflights on the media origin's own CORS policy", async (t) => {
+  restoreFetch(t);
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return new Response(null, { status: 204, headers: { "access-control-allow-origin": "https://testagram.site" } });
+  };
+
+  const response = await worker.fetch(new Request("https://media.testagram.site/upload", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "PUT",
+      "access-control-request-headers": "authorization,x-amz-date",
+    },
+  }), env());
+
+  assert.equal(response.status, 204);
+  assert.equal(fetches, 1);
+});
+
 test("canonical API hostname proxies to the verified Backend origin", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -316,7 +400,7 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
     if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
       wakeCalls += 1;
       assert.equal(method, "POST");
-      assert.equal(headers.get("idempotency-key"), null);
+      assert.match(headers.get("idempotency-key") || "", /^testagram-wake-[0-9a-f-]{36}$/i);
       assert.deepEqual(await new Response(init.body).json(), {});
       return new Response(JSON.stringify({ state: "running", runtime: { ready: true } }), { status: 200 });
     }
@@ -421,10 +505,12 @@ test("does not replay a non-idempotent POST after waking the machine", async (t)
   restoreFetch(t);
   let originCalls = 0;
   let wakeCalls = 0;
-  globalThis.fetch = async (request) => {
+  let wakeIdempotencyKey = "";
+  globalThis.fetch = async (request, init) => {
     const url = typeof request === "string" ? request : request.url;
     if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
       wakeCalls += 1;
+      wakeIdempotencyKey = new Headers(init?.headers).get("idempotency-key") ?? "";
       return new Response(JSON.stringify({ state: "running", runtime: { ready: true } }), { status: 200 });
     }
     if (url.startsWith(apiOrigin)) {
@@ -442,6 +528,76 @@ test("does not replay a non-idempotent POST after waking the machine", async (t)
   assert.equal((await response.json()).error, "machine_awake_retry_required");
   assert.equal(originCalls, 1);
   assert.equal(wakeCalls, 1);
+});
+
+test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let wakeCalls = 0;
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return new Response(JSON.stringify({
+        error: {
+          code: "machine_cooldown",
+          message: "The machine is cooling down after its maximum run.",
+          retryAfterSeconds: 120,
+        },
+      }), {
+        status: 409,
+        headers: { "retry-after": "120", "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith(apiOrigin)) {
+      originCalls += 1;
+      return new Response("machine paused", { status: 503 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz", {
+    headers: { origin: "https://testagram.site" },
+  }), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "machine_wake_failed");
+  assert.equal(response.headers.get("retry-after"), "120");
+  assert.equal(response.headers.get("x-testagram-recovery"), "attempted");
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://testagram.site");
+  const exposedHeaders = response.headers.get("access-control-expose-headers").toLowerCase();
+  assert.match(exposedHeaders, /retry-after/);
+  assert.match(exposedHeaders, /x-testagram-recovery/);
+  assert.equal(originCalls, 1);
+  assert.equal(wakeCalls, 1);
+});
+
+test("does not reflect an unapproved origin on machine recovery responses", async (t) => {
+  restoreFetch(t);
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      return new Response(JSON.stringify({
+        error: { code: "machine_cooldown", retryAfterSeconds: 30 },
+      }), {
+        status: 409,
+        headers: { "retry-after": "30", "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith(apiOrigin)) return new Response("machine paused", { status: 503 });
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz", {
+    headers: { origin: "https://evil.example" },
+  }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("access-control-allow-origin"), null);
+  assert.equal(response.headers.get("retry-after"), "30");
 });
 
 test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {

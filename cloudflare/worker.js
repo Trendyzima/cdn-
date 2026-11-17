@@ -18,6 +18,94 @@ function json(body, status = 200) {
   });
 }
 
+const RECOVERY_CORS_ORIGINS = new Set([
+  "https://testagram.site",
+  "https://www.testagram.site",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]);
+const CORS_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"];
+const CORS_HEADERS = [
+  "authorization",
+  "content-type",
+  "idempotency-key",
+  "x-application-token",
+  "x-verification-session-token",
+  "x-identity-approval-token",
+  "x-identity-approval-jti",
+  "x-request-id",
+  "accept",
+];
+
+function corsPreflight(request) {
+  const origin = request.headers.get("origin")?.trim() || "";
+  const method = request.headers.get("access-control-request-method")?.trim().toUpperCase() || "";
+  if (!RECOVERY_CORS_ORIGINS.has(origin)) {
+    return new Response(null, { status: 403, headers: { "cache-control": "no-store" } });
+  }
+  if (!CORS_METHODS.includes(method)) {
+    return new Response(null, { status: 405, headers: { "cache-control": "no-store" } });
+  }
+
+  const requestedHeaders = (request.headers.get("access-control-request-headers") || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (requestedHeaders.some((header) => !CORS_HEADERS.includes(header))) {
+    return new Response(null, { status: 403, headers: { "cache-control": "no-store" } });
+  }
+
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": origin,
+      "access-control-allow-methods": CORS_METHODS.join(", "),
+      "access-control-allow-headers": CORS_HEADERS.join(", "),
+      "access-control-max-age": "600",
+      "access-control-expose-headers": "Retry-After, X-Testagram-Recovery",
+      "cache-control": "no-store",
+      "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+function exposeRecoveryHeaders(response, request) {
+  // Do not reconstruct WebSocket upgrade responses.
+  if (response.status === 101) return response;
+
+  const headers = new Headers(response.headers);
+  const requestOrigin = request?.headers.get("origin")?.trim() || "";
+  if (requestOrigin && RECOVERY_CORS_ORIGINS.has(requestOrigin)) {
+    headers.set("access-control-allow-origin", requestOrigin);
+    const vary = new Set(
+      (headers.get("vary") || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+    if (![...vary].some((value) => value === "*")) vary.add("Origin");
+    headers.set("vary", [...vary].join(", "));
+  }
+
+  const exposed = new Map(
+    (headers.get("access-control-expose-headers") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => [value.toLowerCase(), value]),
+  );
+  exposed.set("retry-after", "Retry-After");
+  exposed.set("x-testagram-recovery", "X-Testagram-Recovery");
+  headers.set("access-control-expose-headers", [...exposed.values()].join(", "));
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function configuredOrigin(raw, publicHost) {
   if (typeof raw !== "string" || raw.trim() === "") {
     throw new Error("origin_not_configured");
@@ -117,10 +205,17 @@ function makeUpstreamRequest(source, target, incoming) {
   return new Request(target.toString(), init);
 }
 
+function retryAfterSeconds(headers) {
+  const raw = headers?.get("retry-after");
+  if (!raw || !/^\d+$/.test(raw.trim())) return null;
+  const seconds = Number(raw);
+  return Number.isSafeInteger(seconds) && seconds > 0 ? Math.min(seconds, 86400) : null;
+}
+
 async function wakeMachine(env) {
   const machineId = typeof env.MACHINE_ID === "string" ? env.MACHINE_ID.trim() : "";
   const apiKey = typeof env.INSTABOX_API_KEY === "string" ? env.INSTABOX_API_KEY : "";
-  if (!machineId || !apiKey) return false;
+  if (!machineId || !apiKey) return { ready: false, retryAfter: null };
 
   const api = "https://api.instabox.sh";
   const auth = { "X-API-Key": apiKey };
@@ -133,55 +228,97 @@ async function wakeMachine(env) {
     // Do not use /start for every non-running state: that is wrong for paused VMs.
     const wake = await fetch(machineUrl + "/wake", {
       method: "POST",
-      headers: { ...auth, "Content-Type": "application/json" },
+      headers: {
+        ...auth,
+        "Content-Type": "application/json",
+        // InstaBox requires an idempotency key for lifecycle operations.
+        "Idempotency-Key": `testagram-wake-${crypto.randomUUID()}`,
+      },
       body: "{}",
     });
     if (wake.ok) {
       const machine = await wake.json();
-      return machine?.state === "running" && machine?.runtime?.ready === true;
+      return {
+        ready: machine?.state === "running" && machine?.runtime?.ready === true,
+        retryAfter: null,
+      };
     }
+
+    // Preserve provider cooldown hints. In particular, max-run cooldowns can
+    // last much longer than the default five-second cold-start retry.
+    const wakeRetryAfter = retryAfterSeconds(wake.headers);
 
     // A concurrent start/resume may already be queued. Follow that exact
     // operation rather than guessing from a transient machine state (which can
     // still say "suspended" while a resume operation is queued).
-    if (wake.status !== 409) return false;
+    if (wake.status !== 409) return { ready: false, retryAfter: wakeRetryAfter };
     const failure = await wake.json().catch(() => ({}));
     const operationId = failure?.error?.code === "operation_conflict"
       ? failure.error.operationId
       : null;
-    if (typeof operationId !== "string" || !operationId) return false;
+    if (typeof operationId !== "string" || !operationId) {
+      return { ready: false, retryAfter: wakeRetryAfter };
+    }
 
     const operationUrl = api + "/v1/operations/" + encodeURIComponent(operationId);
     for (let attempt = 0; attempt < 40; attempt += 1) {
       const response = await fetch(operationUrl, { headers: auth });
-      if (!response.ok) return false;
+      if (!response.ok) {
+        return {
+          ready: false,
+          retryAfter: retryAfterSeconds(response.headers) ?? wakeRetryAfter,
+        };
+      }
       const operation = await response.json();
-      if (!["resume", "start"].includes(operation?.type)) return false;
-      if (operation.state === "failed") return false;
+      if (!["resume", "start"].includes(operation?.type)) {
+        return { ready: false, retryAfter: wakeRetryAfter };
+      }
+      if (operation.state === "failed") {
+        const operationRetry = Number(operation?.error?.retryAfterSeconds);
+        return {
+          ready: false,
+          retryAfter: Number.isSafeInteger(operationRetry) && operationRetry > 0
+            ? Math.min(operationRetry, 86400)
+            : wakeRetryAfter,
+        };
+      }
       if (operation.state === "succeeded") {
         let machine = operation.machine;
         if (!machine) {
           const current = await fetch(machineUrl, { headers: auth });
-          if (!current.ok) return false;
+          if (!current.ok) {
+            return {
+              ready: false,
+              retryAfter: retryAfterSeconds(current.headers) ?? wakeRetryAfter,
+            };
+          }
           machine = await current.json();
         }
-        return machine?.state === "running" && machine?.runtime?.ready === true;
+        return {
+          ready: machine?.state === "running" && machine?.runtime?.ready === true,
+          retryAfter: null,
+        };
       }
-      if (!["queued", "running"].includes(operation.state)) return false;
+      if (!["queued", "running"].includes(operation.state)) {
+        return { ready: false, retryAfter: wakeRetryAfter };
+      }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   } catch {
-    return false;
+    return { ready: false, retryAfter: null };
   }
-  return false;
+  return { ready: false, retryAfter: null };
 }
 
-function recoveryUnavailable(error) {
+function recoveryUnavailable(error, retryAfter = null, request = null) {
   const response = json({ ok: false, error }, 503);
   const headers = new Headers(response.headers);
-  headers.set("retry-after", "5");
+  const seconds = Number.isSafeInteger(retryAfter) && retryAfter > 0
+    ? Math.min(retryAfter, 86400)
+    : 5;
+  headers.set("retry-after", String(seconds));
   headers.set("x-testagram-recovery", "attempted");
-  return new Response(response.body, { status: 503, headers });
+  return exposeRecoveryHeaders(new Response(response.body, { status: 503, headers }), request);
 }
 
 export default {
@@ -207,6 +344,12 @@ export default {
       });
     }
 
+    // Browser preflights are answered at the edge. They must not wake the
+    // paused machine; the real API request below is what triggers recovery.
+    if (incoming.hostname.toLowerCase() === "api.testagram.site" && request.method === "OPTIONS" && request.headers.has("access-control-request-method")) {
+      return corsPreflight(request);
+    }
+
     let origin;
     try {
       origin = configuredOrigin(env[variable], incoming.hostname);
@@ -226,25 +369,27 @@ export default {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
       if ([502, 503, 504].includes(upstreamResponse.status)) {
         try { await upstreamResponse.body?.cancel(); } catch {}
-        if (!await wakeMachine(env)) return recoveryUnavailable("machine_wake_failed");
-        if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
+        const wake = await wakeMachine(env);
+      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
+      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
           try { await upstreamResponse.body?.cancel(); } catch {}
-          return recoveryUnavailable("machine_waking_or_unavailable");
+          return recoveryUnavailable("machine_waking_or_unavailable", null, request);
         }
       }
     } catch {
-      if (!await wakeMachine(env)) return recoveryUnavailable("machine_wake_failed");
-      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
+      const wake = await wakeMachine(env);
+      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
+      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
       try {
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
       } catch {
-        return recoveryUnavailable("machine_waking_or_unavailable");
+        return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }
       if ([502, 503, 504].includes(upstreamResponse.status)) {
         try { await upstreamResponse.body?.cancel(); } catch {}
-        return recoveryUnavailable("machine_waking_or_unavailable");
+        return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }
     }
 
@@ -259,16 +404,16 @@ export default {
           redirect.host = incoming.host;
           const responseHeaders = new Headers(upstreamResponse.headers);
           responseHeaders.set("location", redirect.toString());
-          return new Response(upstreamResponse.body, {
+          return exposeRecoveryHeaders(new Response(upstreamResponse.body, {
             status: upstreamResponse.status,
             statusText: upstreamResponse.statusText,
             headers: responseHeaders,
-          });
+          }), request);
         }
       } catch {
         // Preserve the upstream response if its Location is not a valid URL.
       }
     }
-    return upstreamResponse;
+    return exposeRecoveryHeaders(upstreamResponse, request);
   },
 };
