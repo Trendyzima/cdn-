@@ -117,10 +117,17 @@ function makeUpstreamRequest(source, target, incoming) {
   return new Request(target.toString(), init);
 }
 
+function retryAfterSeconds(headers) {
+  const raw = headers?.get("retry-after");
+  if (!raw || !/^\\d+$/.test(raw.trim())) return null;
+  const seconds = Number(raw);
+  return Number.isSafeInteger(seconds) && seconds > 0 ? Math.min(seconds, 86400) : null;
+}
+
 async function wakeMachine(env) {
   const machineId = typeof env.MACHINE_ID === "string" ? env.MACHINE_ID.trim() : "";
   const apiKey = typeof env.INSTABOX_API_KEY === "string" ? env.INSTABOX_API_KEY : "";
-  if (!machineId || !apiKey) return false;
+  if (!machineId || !apiKey) return { ready: false, retryAfter: null };
 
   const api = "https://api.instabox.sh";
   const auth = { "X-API-Key": apiKey };
@@ -138,48 +145,85 @@ async function wakeMachine(env) {
     });
     if (wake.ok) {
       const machine = await wake.json();
-      return machine?.state === "running" && machine?.runtime?.ready === true;
+      return {
+        ready: machine?.state === "running" && machine?.runtime?.ready === true,
+        retryAfter: null,
+      };
     }
+
+    // Preserve provider cooldown hints. In particular, max-run cooldowns can
+    // last much longer than the default five-second cold-start retry.
+    const wakeRetryAfter = retryAfterSeconds(wake.headers);
 
     // A concurrent start/resume may already be queued. Follow that exact
     // operation rather than guessing from a transient machine state (which can
     // still say "suspended" while a resume operation is queued).
-    if (wake.status !== 409) return false;
+    if (wake.status !== 409) return { ready: false, retryAfter: wakeRetryAfter };
     const failure = await wake.json().catch(() => ({}));
     const operationId = failure?.error?.code === "operation_conflict"
       ? failure.error.operationId
       : null;
-    if (typeof operationId !== "string" || !operationId) return false;
+    if (typeof operationId !== "string" || !operationId) {
+      return { ready: false, retryAfter: wakeRetryAfter };
+    }
 
     const operationUrl = api + "/v1/operations/" + encodeURIComponent(operationId);
     for (let attempt = 0; attempt < 40; attempt += 1) {
       const response = await fetch(operationUrl, { headers: auth });
-      if (!response.ok) return false;
+      if (!response.ok) {
+        return {
+          ready: false,
+          retryAfter: retryAfterSeconds(response.headers) ?? wakeRetryAfter,
+        };
+      }
       const operation = await response.json();
-      if (!["resume", "start"].includes(operation?.type)) return false;
-      if (operation.state === "failed") return false;
+      if (!["resume", "start"].includes(operation?.type)) {
+        return { ready: false, retryAfter: wakeRetryAfter };
+      }
+      if (operation.state === "failed") {
+        const operationRetry = Number(operation?.error?.retryAfterSeconds);
+        return {
+          ready: false,
+          retryAfter: Number.isSafeInteger(operationRetry) && operationRetry > 0
+            ? Math.min(operationRetry, 86400)
+            : wakeRetryAfter,
+        };
+      }
       if (operation.state === "succeeded") {
         let machine = operation.machine;
         if (!machine) {
           const current = await fetch(machineUrl, { headers: auth });
-          if (!current.ok) return false;
+          if (!current.ok) {
+            return {
+              ready: false,
+              retryAfter: retryAfterSeconds(current.headers) ?? wakeRetryAfter,
+            };
+          }
           machine = await current.json();
         }
-        return machine?.state === "running" && machine?.runtime?.ready === true;
+        return {
+          ready: machine?.state === "running" && machine?.runtime?.ready === true,
+          retryAfter: null,
+        };
       }
-      if (!["queued", "running"].includes(operation.state)) return false;
+      if (!["queued", "running"].includes(operation.state)) {
+        return { ready: false, retryAfter: wakeRetryAfter };
+      }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   } catch {
-    return false;
+    return { ready: false, retryAfter: null };
   }
-  return false;
+  return { ready: false, retryAfter: null };
 }
 
-function recoveryUnavailable(error) {
+function recoveryUnavailable(error, retryAfter = null) {
   const response = json({ ok: false, error }, 503);
   const headers = new Headers(response.headers);
-  headers.set("retry-after", "5");
+  const seconds = Number.isSafeInteger(retryAfter) && retryAfter > 0
+    ? Math.min(retryAfter, 86400)
+    : 5;
+  headers.set("retry-after", String(seconds));
   headers.set("x-testagram-recovery", "attempted");
   return new Response(response.body, { status: 503, headers });
 }
@@ -226,7 +270,8 @@ export default {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
       if ([502, 503, 504].includes(upstreamResponse.status)) {
         try { await upstreamResponse.body?.cancel(); } catch {}
-        if (!await wakeMachine(env)) return recoveryUnavailable("machine_wake_failed");
+        const wake = await wakeMachine(env);
+        if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter);
         if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
@@ -235,7 +280,8 @@ export default {
         }
       }
     } catch {
-      if (!await wakeMachine(env)) return recoveryUnavailable("machine_wake_failed");
+      const wake = await wakeMachine(env);
+        if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter);
       if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
       try {
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
