@@ -316,7 +316,7 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
     if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
       wakeCalls += 1;
       assert.equal(method, "POST");
-      assert.equal(headers.get("idempotency-key"), null);
+      assert.match(headers.get("idempotency-key") || "", /^testagram-wake-[0-9a-f-]{36}$/i);
       assert.deepEqual(await new Response(init.body).json(), {});
       return new Response(JSON.stringify({ state: "running", runtime: { ready: true } }), { status: 200 });
     }
@@ -483,7 +483,6 @@ test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) =>
   assert.equal(response.headers.get("x-testagram-recovery"), "attempted");
   assert.equal(originCalls, 1);
   assert.equal(wakeCalls, 1);
-  assert.match(wakeIdempotencyKey, /^testagram-wake-[0-9a-f-]{36}$/i);
 });
 
 test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {
