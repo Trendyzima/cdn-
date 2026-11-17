@@ -15,6 +15,69 @@ function restoreFetch(t) {
   t.after(() => { globalThis.fetch = original; });
 }
 
+test("answers approved browser preflights at the edge without waking the machine", async (t) => {
+  restoreFetch(t);
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization,content-type,idempotency-key",
+    },
+  }), env());
+
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://testagram.site");
+  assert.match(response.headers.get("access-control-allow-methods"), /POST/);
+  const allowedHeaders = response.headers.get("access-control-allow-headers").toLowerCase();
+  assert.match(allowedHeaders, /authorization/);
+  assert.match(allowedHeaders, /content-type/);
+  assert.match(allowedHeaders, /idempotency-key/);
+  assert.equal(response.headers.get("access-control-max-age"), "600");
+  assert.equal(fetches, 0);
+});
+
+test("rejects unapproved or unsupported browser preflights without contacting an origin", async (t) => {
+  restoreFetch(t);
+  let fetches = 0;
+  globalThis.fetch = async () => { fetches += 1; return new Response("unexpected"); };
+
+  const unapprovedOrigin = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://evil.example",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization",
+    },
+  }), env());
+  assert.equal(unapprovedOrigin.status, 403);
+  assert.equal(unapprovedOrigin.headers.get("access-control-allow-origin"), null);
+
+  const unapprovedHeader = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "x-evil-header",
+    },
+  }), env());
+  assert.equal(unapprovedHeader.status, 403);
+  assert.equal(unapprovedHeader.headers.get("access-control-allow-origin"), null);
+
+  const unsupportedMethod = await worker.fetch(new Request("https://api.testagram.site/v1/auth/login", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "PATCH",
+    },
+  }), env());
+  assert.equal(unsupportedMethod.status, 405);
+  assert.equal(fetches, 0);
+});
+
 test("canonical API hostname proxies to the verified Backend origin", async (t) => {
   restoreFetch(t);
   let upstream;
