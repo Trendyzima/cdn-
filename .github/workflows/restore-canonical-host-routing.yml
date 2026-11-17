@@ -434,6 +434,8 @@ jobs:
             apex_health="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/apex-health.json" -w '%{http_code}' "https://testagram.site/_testagram/edge-health?release_probe=$GITHUB_RUN_ID" || true)"
             apex_root="$(curl -sS --connect-timeout 5 --max-time 15 -D "$tmp/apex-root.headers" -o /dev/null -w '%{http_code}' "https://testagram.site/?release_probe=$GITHUB_RUN_ID" || true)"
             apex_webfinger="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/apex-webfinger.json" -w '%{http_code}' "https://testagram.site/.well-known/webfinger?resource=acct:nonexistent-probe@invalid.testagram.site" || true)"
+            www_health="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/www-health.json" -w '%{http_code}' "https://www.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            www_root="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/www-root.html" -w '%{http_code}' "https://www.testagram.site/?release_probe=$GITHUB_RUN_ID" || true)"
             if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" && "$tv_catalog_status" == "401" ]] &&
                grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" &&
                jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
@@ -443,16 +445,19 @@ jobs:
                jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null &&
                [[ "$apex_health" == "200" && "$apex_root" == "308" ]] &&
                jq -e '.ok == true and .service == "testagram-apex-edge"' "$tmp/apex-health.json" >/dev/null &&
-               grep -Fqi 'https://www.testagram.site' "$tmp/apex-root.headers"; then
+               grep -Fqi 'https://www.testagram.site' "$tmp/apex-root.headers" &&
+               [[ "$www_health" == "200" && "$www_root" == "200" ]] &&
+               jq -e '.ok == true and .service == "testagram-web"' "$tmp/www-health.json" >/dev/null &&
+               grep -Fq 'flutter_bootstrap.js' "$tmp/www-root.html"; then
               case "$apex_webfinger" in 200|400|404) ;; *) echo "::error::Public apex WebFinger route failed (HTTP $apex_webfinger)."; cat "$tmp/apex-webfinger.json"; exit 1 ;; esac
               private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
               case "$private_status" in 401|403|404) ;; *) echo "::error::Canonical CDN allowed unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;; esac
-              echo "api.testagram.site, media.testagram.site and testagram.site identify their pinned services; apex redirects to www and WebFinger reaches Federation."
+              echo "api.testagram.site, media.testagram.site, www.testagram.site and testagram.site identify their pinned services; apex redirects to the self-hosted Flutter frontend and WebFinger reaches Federation."
               exit 0
             fi
             sleep 10
           done
-          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics APEX_HEALTH=$apex_health APEX_ROOT=$apex_root APEX_WEBFINGER=$apex_webfinger."
+          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics APEX_HEALTH=$apex_health APEX_ROOT=$apex_root APEX_WEBFINGER=$apex_webfinger WWW_HEALTH=$www_health WWW_ROOT=$www_root."
           cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
           exit 1
 
