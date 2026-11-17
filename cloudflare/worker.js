@@ -140,7 +140,12 @@ async function wakeMachine(env) {
     // Do not use /start for every non-running state: that is wrong for paused VMs.
     const wake = await fetch(machineUrl + "/wake", {
       method: "POST",
-      headers: { ...auth, "Content-Type": "application/json" },
+      headers: {
+        ...auth,
+        "Content-Type": "application/json",
+        // InstaBox requires an idempotency key for lifecycle operations.
+        "Idempotency-Key": `testagram-wake-${crypto.randomUUID()}`,
+      },
       body: "{}",
     });
     if (wake.ok) {
@@ -271,7 +276,7 @@ export default {
       if ([502, 503, 504].includes(upstreamResponse.status)) {
         try { await upstreamResponse.body?.cancel(); } catch {}
         const wake = await wakeMachine(env);
-        if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter);
+      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter);
         if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
