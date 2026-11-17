@@ -417,7 +417,7 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
   };
 
   const payload = JSON.stringify({ text: "preserve this post body" });
-  const response = await worker.fetch(new Request("https://api.testagram.site/api/posts", {
+  const response = await worker.fetch(new Request("https://api.testagram.site/api/social/posts", {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": "post-create-123" },
     body: payload,
@@ -524,6 +524,38 @@ test("does not replay a non-idempotent POST after waking the machine", async (t)
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text: "do not duplicate" }),
   }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "machine_awake_retry_required");
+  assert.equal(originCalls, 1);
+  assert.equal(wakeCalls, 1);
+});
+
+test("does not replay unrelated mutations even when they carry an Idempotency-Key", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let wakeCalls = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return new Response(JSON.stringify({ state: "running", runtime: { ready: true } }), { status: 200 });
+    }
+    if (url.startsWith(apiOrigin)) {
+      originCalls += 1;
+      return new Response("temporary gateway failure", { status: 503 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/api/social/posts/post-1/replies", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "idempotency-key": "reply-create-123",
+    },
+    body: JSON.stringify({ content: "do not duplicate" }),
+  }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
+
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error, "machine_awake_retry_required");
   assert.equal(originCalls, 1);
