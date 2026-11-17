@@ -78,6 +78,27 @@ test("rejects unapproved or unsupported browser preflights without contacting an
   assert.equal(fetches, 0);
 });
 
+test("leaves media-host preflights on the media origin's own CORS policy", async (t) => {
+  restoreFetch(t);
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return new Response(null, { status: 204, headers: { "access-control-allow-origin": "https://testagram.site" } });
+  };
+
+  const response = await worker.fetch(new Request("https://media.testagram.site/upload", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://testagram.site",
+      "access-control-request-method": "PUT",
+      "access-control-request-headers": "authorization,x-amz-date",
+    },
+  }), env());
+
+  assert.equal(response.status, 204);
+  assert.equal(fetches, 1);
+});
+
 test("canonical API hostname proxies to the verified Backend origin", async (t) => {
   restoreFetch(t);
   let upstream;
