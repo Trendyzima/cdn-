@@ -461,10 +461,60 @@ jobs:
           cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
           exit 1
 
-      # Do not automatically roll back the Worker after apex route cutover:
-      # the old version does not recognize testagram.site and would return 421
-      # while the exact apex route remains attached. The previous deployment
-      # snapshot is retained above for an intentional manual rollback.
+      # Do not automatically roll back the Worker after API/apex cutover: an older
+      # version may not recognize the canonical apex route. The www-only failure
+      # recovery above removes only the www route before restoring its Pages owner.
+      - name: Restore www Pages ownership if the self-hosted web cutover fails
+        if: failure() && steps.preflight.outputs.www_pages_attached == 'true' && steps.verify_gateway.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zone_id="${{ steps.preflight.outputs.zone_id }}"
+          pages_endpoint="$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/www.testagram.site"
+          current_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/www-pages-rollback.json -w '%{http_code}' "$pages_endpoint" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+          if [[ "$current_status" == "200" ]] && jq -e '.success == true and .result.name == "www.testagram.site"' /tmp/www-pages-rollback.json >/dev/null; then
+            echo "www.testagram.site is already attached to Pages; no rollback action is required."
+            exit 0
+          fi
+          [[ "$current_status" == "404" ]] || {
+            echo "::error::Cannot safely restore Pages because www domain ownership is ambiguous (HTTP $current_status)."
+            jq -c '{success,errors,result}' /tmp/www-pages-rollback.json 2>/dev/null || true
+            exit 1
+          }
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$routes" >/dev/null || {
+            echo "::error::Cannot enumerate Worker routes for safe www rollback; Pages will not be reattached."
+            exit 1
+          }
+          route="$(jq -c '.result[]? | select(.pattern=="www.testagram.site/*")' <<<"$routes" | head -n 1)"
+          if [[ -n "$route" ]]; then
+            script="$(jq -r '.script // empty' <<<"$route")"
+            route_id="$(jq -r '.id // empty' <<<"$route")"
+            [[ "$script" == "testagram-cdn" && -n "$route_id" ]] || {
+              echo "::error::Unexpected Worker owns www.testagram.site; refusing to remove it or reattach Pages."
+              exit 1
+            }
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/zones/$zone_id/workers/routes/$route_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          fi
+          verified_routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          if jq -e '.result[]? | select(.pattern=="www.testagram.site/*")' <<<"$verified_routes" >/dev/null; then
+            echo "::error::The www Worker route remains active; refusing to reattach Pages underneath it."
+            exit 1
+          fi
+          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST "$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" -d '{"name":"www.testagram.site"}')"
+          jq -e '.success == true' <<<"$restored" >/dev/null || {
+            echo "::error::Could not reattach www.testagram.site to the previous Flutter Pages origin."
+            jq -c '{errors,messages}' <<<"$restored"
+            exit 1
+          }
+          verify="$(curl --retry 2 --retry-all-errors -fsS "$pages_endpoint" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and .result.name == "www.testagram.site"' <<<"$verify" >/dev/null || {
+            echo "::error::Pages reattachment was accepted but could not be verified."
+            exit 1
+          }
+          echo "Restored and verified www.testagram.site on its previous Flutter Pages association. The apex and API/media routes were not changed."
+
       - name: Restore the previous R2 hostname owner if Go CDN cutover fails
         if: failure() && steps.preflight.outputs.r2_bucket != '' && steps.detach_r2_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
         shell: bash
