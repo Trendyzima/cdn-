@@ -361,9 +361,16 @@ export default {
     target.pathname = incoming.pathname;
     target.search = incoming.search;
     const retryRequest = request.clone();
+    const hasIdempotencyKey = Boolean(request.headers.get("idempotency-key")?.trim());
+    // Match the Backend's only currently replay-safe mutation contract.
+    // An arbitrary Idempotency-Key must never make another mutation replayable.
+    const idempotentPostCreate =
+      request.method === "POST" &&
+      incoming.pathname === "/api/social/posts" &&
+      hasIdempotencyKey;
     const replaySafe =
       (["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.headers.get("upgrade")) ||
-      Boolean(request.headers.get("idempotency-key"));
+      idempotentPostCreate;
     let upstreamResponse;
     try {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
