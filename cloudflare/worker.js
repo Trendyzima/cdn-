@@ -346,7 +346,7 @@ export default {
 
     // Browser preflights are answered at the edge. They must not wake the
     // paused machine; the real API request below is what triggers recovery.
-    if (request.method === "OPTIONS" && request.headers.has("access-control-request-method")) {
+    if (host === "api.testagram.site" && request.method === "OPTIONS" && request.headers.has("access-control-request-method")) {
       return corsPreflight(request);
     }
 
