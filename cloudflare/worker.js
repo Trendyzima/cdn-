@@ -329,16 +329,16 @@ export default {
       }
     } catch {
       const wake = await wakeMachine(env);
-        if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter);
-      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
+      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
+      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
       try {
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
       } catch {
-        return recoveryUnavailable("machine_waking_or_unavailable");
+        return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }
       if ([502, 503, 504].includes(upstreamResponse.status)) {
         try { await upstreamResponse.body?.cancel(); } catch {}
-        return recoveryUnavailable("machine_waking_or_unavailable");
+        return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }
     }
 
