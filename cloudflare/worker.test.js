@@ -112,7 +112,7 @@ test("www frontend hostname proxies to the self-hosted Flutter origin", async (t
   assert.equal(new URL(upstream.url).pathname, "/");
   assert.equal(upstream.headers.get("x-forwarded-host"), "www.testagram.site");
   assert.equal(upstream.headers.get("x-forwarded-proto"), "https");
-  assert.match(await response.text(), /flutter_bootstrap\\.js/);
+  assert.ok((await response.text()).includes("flutter_bootstrap.js"));
 });
 
 test("apex ordinary web paths preserve Caddy's canonical redirect to www", async (t) => {
