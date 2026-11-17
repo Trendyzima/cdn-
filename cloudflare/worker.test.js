@@ -444,6 +444,45 @@ test("does not replay a non-idempotent POST after waking the machine", async (t)
   assert.equal(wakeCalls, 1);
 });
 
+test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let wakeCalls = 0;
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return new Response(JSON.stringify({
+        error: {
+          code: "machine_cooldown",
+          message: "The machine is cooling down after its maximum run.",
+          retryAfterSeconds: 120,
+        },
+      }), {
+        status: 409,
+        headers: { "retry-after": "120", "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith(apiOrigin)) {
+      originCalls += 1;
+      return new Response("machine paused", { status: 503 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "machine_wake_failed");
+  assert.equal(response.headers.get("retry-after"), "120");
+  assert.equal(response.headers.get("x-testagram-recovery"), "attempted");
+  assert.equal(originCalls, 1);
+  assert.equal(wakeCalls, 1);
+});
+
 test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {
   restoreFetch(t);
   globalThis.fetch = async () => { throw new Error("network failure"); };
