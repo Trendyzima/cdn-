@@ -18,6 +18,49 @@ function json(body, status = 200) {
   });
 }
 
+const RECOVERY_CORS_ORIGINS = new Set([
+  "https://testagram.site",
+  "https://www.testagram.site",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]);
+
+function exposeRecoveryHeaders(response, request) {
+  // Do not reconstruct WebSocket upgrade responses.
+  if (response.status === 101) return response;
+
+  const headers = new Headers(response.headers);
+  const requestOrigin = request?.headers.get("origin")?.trim() || "";
+  if (requestOrigin && RECOVERY_CORS_ORIGINS.has(requestOrigin)) {
+    headers.set("access-control-allow-origin", requestOrigin);
+    const vary = new Set(
+      (headers.get("vary") || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+    if (![...vary].some((value) => value === "*")) vary.add("Origin");
+    headers.set("vary", [...vary].join(", "));
+  }
+
+  const exposed = new Map(
+    (headers.get("access-control-expose-headers") || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => [value.toLowerCase(), value]),
+  );
+  exposed.set("retry-after", "Retry-After");
+  exposed.set("x-testagram-recovery", "X-Testagram-Recovery");
+  headers.set("access-control-expose-headers", [...exposed.values()].join(", "));
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function configuredOrigin(raw, publicHost) {
   if (typeof raw !== "string" || raw.trim() === "") {
     throw new Error("origin_not_configured");
@@ -222,7 +265,7 @@ async function wakeMachine(env) {
   return { ready: false, retryAfter: null };
 }
 
-function recoveryUnavailable(error, retryAfter = null) {
+function recoveryUnavailable(error, retryAfter = null, request = null) {
   const response = json({ ok: false, error }, 503);
   const headers = new Headers(response.headers);
   const seconds = Number.isSafeInteger(retryAfter) && retryAfter > 0
@@ -230,7 +273,7 @@ function recoveryUnavailable(error, retryAfter = null) {
     : 5;
   headers.set("retry-after", String(seconds));
   headers.set("x-testagram-recovery", "attempted");
-  return new Response(response.body, { status: 503, headers });
+  return exposeRecoveryHeaders(new Response(response.body, { status: 503, headers }), request);
 }
 
 export default {
@@ -276,12 +319,12 @@ export default {
       if ([502, 503, 504].includes(upstreamResponse.status)) {
         try { await upstreamResponse.body?.cancel(); } catch {}
         const wake = await wakeMachine(env);
-      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter);
-        if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required");
+      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
+        if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
           try { await upstreamResponse.body?.cancel(); } catch {}
-          return recoveryUnavailable("machine_waking_or_unavailable");
+          return recoveryUnavailable("machine_waking_or_unavailable", null, request);
         }
       }
     } catch {
@@ -310,16 +353,16 @@ export default {
           redirect.host = incoming.host;
           const responseHeaders = new Headers(upstreamResponse.headers);
           responseHeaders.set("location", redirect.toString());
-          return new Response(upstreamResponse.body, {
+          return exposeRecoveryHeaders(new Response(upstreamResponse.body, {
             status: upstreamResponse.status,
             statusText: upstreamResponse.statusText,
             headers: responseHeaders,
-          });
+          }), request);
         }
       } catch {
         // Preserve the upstream response if its Location is not a valid URL.
       }
     }
-    return upstreamResponse;
+    return exposeRecoveryHeaders(upstreamResponse, request);
   },
 };
