@@ -119,7 +119,7 @@ function makeUpstreamRequest(source, target, incoming) {
 
 function retryAfterSeconds(headers) {
   const raw = headers?.get("retry-after");
-  if (!raw || !/^\\d+$/.test(raw.trim())) return null;
+  if (!raw || !/^\d+$/.test(raw.trim())) return null;
   const seconds = Number(raw);
   return Number.isSafeInteger(seconds) && seconds > 0 ? Math.min(seconds, 86400) : null;
 }
