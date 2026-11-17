@@ -18,6 +18,12 @@ zone_name = "testagram.site"
 pattern = "testagram.site/*"
 zone_name = "testagram.site"
 
+# www is served by the self-hosted Flutter container behind the same dedicated
+# Caddy listener; the Worker forwards the public host for private-edge routing.
+[[routes]]
+pattern = "www.testagram.site/*"
+zone_name = "testagram.site"
+
 # media.testagram.site is already attached to this Worker as a Custom Domain.
 # Updating this script replaces the old R2-serving implementation in place.
 [[routes]]
