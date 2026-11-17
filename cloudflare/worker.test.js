@@ -93,6 +93,28 @@ test("apex WebFinger and ActivityPub paths proxy to the dedicated Caddy origin",
   assert.equal(response.headers.get("content-type"), "application/jrd+json");
 });
 
+test("www frontend hostname proxies to the self-hosted Flutter origin", async (t) => {
+  restoreFetch(t);
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = request;
+    return new Response('<html><script src="flutter_bootstrap.js"></script></html>', {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+  };
+  const response = await worker.fetch(
+    new Request("https://www.testagram.site/"),
+    env(),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(new URL(upstream.url).origin, apexOrigin);
+  assert.equal(new URL(upstream.url).pathname, "/");
+  assert.equal(upstream.headers.get("x-forwarded-host"), "www.testagram.site");
+  assert.equal(upstream.headers.get("x-forwarded-proto"), "https");
+  assert.match(await response.text(), /flutter_bootstrap\\.js/);
+});
+
 test("apex ordinary web paths preserve Caddy's canonical redirect to www", async (t) => {
   restoreFetch(t);
   let upstream;
