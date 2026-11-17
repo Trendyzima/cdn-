@@ -421,10 +421,12 @@ test("does not replay a non-idempotent POST after waking the machine", async (t)
   restoreFetch(t);
   let originCalls = 0;
   let wakeCalls = 0;
-  globalThis.fetch = async (request) => {
+  let wakeIdempotencyKey = "";
+  globalThis.fetch = async (request, init) => {
     const url = typeof request === "string" ? request : request.url;
     if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
       wakeCalls += 1;
+      wakeIdempotencyKey = new Headers(init?.headers).get("idempotency-key") ?? "";
       return new Response(JSON.stringify({ state: "running", runtime: { ready: true } }), { status: 200 });
     }
     if (url.startsWith(apiOrigin)) {
@@ -481,6 +483,7 @@ test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) =>
   assert.equal(response.headers.get("x-testagram-recovery"), "attempted");
   assert.equal(originCalls, 1);
   assert.equal(wakeCalls, 1);
+  assert.match(wakeIdempotencyKey, /^testagram-wake-[0-9a-f-]{36}$/i);
 });
 
 test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {
