@@ -491,6 +491,31 @@ test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) =>
   assert.equal(wakeCalls, 1);
 });
 
+test("does not reflect an unapproved origin on machine recovery responses", async (t) => {
+  restoreFetch(t);
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      return new Response(JSON.stringify({
+        error: { code: "machine_cooldown", retryAfterSeconds: 30 },
+      }), {
+        status: 409,
+        headers: { "retry-after": "30", "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith(apiOrigin)) return new Response("machine paused", { status: 503 });
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz", {
+    headers: { origin: "https://evil.example" },
+  }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("access-control-allow-origin"), null);
+  assert.equal(response.headers.get("retry-after"), "30");
+});
+
 test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {
   restoreFetch(t);
   globalThis.fetch = async () => { throw new Error("network failure"); };
