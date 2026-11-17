@@ -1,10 +1,10 @@
-name: Restore canonical Testagram API, Go CDN and apex federation routing
+name: Restore canonical Testagram API, Go CDN, web and apex federation routing
 
 on:
   workflow_dispatch:
     inputs:
       confirm_canonical_host_routing:
-        description: "Explicitly authorize updating the production Cloudflare Worker for API, media and apex federation hostnames"
+        description: "Explicitly authorize updating the production Cloudflare Worker for API, media, www web and apex federation hostnames"
         required: true
         type: boolean
         default: false
@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       apex_origin:
-        description: "Verified public InstaBox HTTPS URL for the dedicated Caddy apex/Federation port 8443 (no path)"
+        description: "Verified public InstaBox HTTPS URL for the dedicated Caddy web/apex/Federation port 8443 (no path)"
         required: true
         type: string
       machine_id:
@@ -148,7 +148,15 @@ jobs:
             200|400|404) ;;
             *) echo "::error::APEX_ORIGIN WebFinger path failed to reach Federation safely (HTTP $apex_webfinger)."; cat "$tmp/apex-webfinger.json" 2>/dev/null || true; exit 1 ;;
           esac
-          echo "API, CDN and apex origins identify the expected services; private API/CDN health and media boundaries are preserved."
+          www_health="$(curl -sS --connect-timeout 5 --max-time 20 -H 'X-Forwarded-Host: www.testagram.site' -o "$tmp/www-health.json" -w '%{http_code}' "$APEX_ORIGIN/healthz" || true)"
+          www_root="$(curl -sS --connect-timeout 5 --max-time 20 -H 'X-Forwarded-Host: www.testagram.site' -o "$tmp/www-root.html" -w '%{http_code}' "$APEX_ORIGIN/" || true)"
+          if [[ "$www_health" != "200" ]] || ! jq -e '.ok == true and .service == "testagram-web"' "$tmp/www-health.json" >/dev/null ||
+             [[ "$www_root" != "200" ]] || ! grep -Fq 'flutter_bootstrap.js' "$tmp/www-root.html"; then
+            echo "::error::APEX_ORIGIN does not serve the self-hosted Flutter web app when routed for www (health=$www_health root=$www_root)."
+            cat "$tmp/www-health.json" "$tmp/www-root.html" 2>/dev/null || true
+            exit 1
+          fi
+          echo "API, CDN, www Flutter web and apex Federation origins identify the expected services; private API/CDN health and media boundaries are preserved."
 
       - name: Preflight Cloudflare zone and existing hostname ownership
         id: preflight
