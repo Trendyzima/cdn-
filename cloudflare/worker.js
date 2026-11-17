@@ -320,7 +320,7 @@ export default {
         try { await upstreamResponse.body?.cancel(); } catch {}
         const wake = await wakeMachine(env);
       if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
-        if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
+      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
           try { await upstreamResponse.body?.cancel(); } catch {}
