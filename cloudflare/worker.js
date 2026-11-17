@@ -24,6 +24,51 @@ const RECOVERY_CORS_ORIGINS = new Set([
   "http://localhost:5173",
   "http://127.0.0.1:5173",
 ]);
+const CORS_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"];
+const CORS_HEADERS = [
+  "authorization",
+  "content-type",
+  "idempotency-key",
+  "x-application-token",
+  "x-verification-session-token",
+  "x-identity-approval-token",
+  "x-identity-approval-jti",
+  "x-request-id",
+  "accept",
+];
+
+function corsPreflight(request) {
+  const origin = request.headers.get("origin")?.trim() || "";
+  const method = request.headers.get("access-control-request-method")?.trim().toUpperCase() || "";
+  if (!RECOVERY_CORS_ORIGINS.has(origin)) {
+    return new Response(null, { status: 403, headers: { "cache-control": "no-store" } });
+  }
+  if (!CORS_METHODS.includes(method)) {
+    return new Response(null, { status: 405, headers: { "cache-control": "no-store" } });
+  }
+
+  const requestedHeaders = (request.headers.get("access-control-request-headers") || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (requestedHeaders.some((header) => !CORS_HEADERS.includes(header))) {
+    return new Response(null, { status: 403, headers: { "cache-control": "no-store" } });
+  }
+
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": origin,
+      "access-control-allow-methods": CORS_METHODS.join(", "),
+      "access-control-allow-headers": CORS_HEADERS.join(", "),
+      "access-control-max-age": "600",
+      "access-control-expose-headers": "Retry-After, X-Testagram-Recovery",
+      "cache-control": "no-store",
+      "vary": "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
 
 function exposeRecoveryHeaders(response, request) {
   // Do not reconstruct WebSocket upgrade responses.
@@ -297,6 +342,12 @@ export default {
         status: 404,
         headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
       });
+    }
+
+    // Browser preflights are answered at the edge. They must not wake the
+    // paused machine; the real API request below is what triggers recovery.
+    if (request.method === "OPTIONS" && request.headers.has("access-control-request-method")) {
+      return corsPreflight(request);
     }
 
     let origin;
