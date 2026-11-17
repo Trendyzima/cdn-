@@ -192,7 +192,7 @@ jobs:
           pages_attached=false
           if [[ "$pages_status" == "200" ]] && jq -e '.success == true and .result.name == "testagram.site"' /tmp/apex-pages-domain.json >/dev/null; then
             pages_attached=true
-            echo "Confirmed testagram.site is attached only to the expected Flutter Pages project; the guarded cutover will detach this one hostname after all origin and route preflights pass."
+            echo "Confirmed testagram.site is attached to the expected Flutter Pages project; the guarded cutover will detach only the verified apex and www associations after all origin and route preflights pass."
           elif [[ "$pages_status" == "404" ]]; then
             echo "testagram.site is already detached from the Flutter Pages project."
           else
