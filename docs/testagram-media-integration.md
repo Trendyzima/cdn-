@@ -42,13 +42,7 @@ For public media, a request without a viewer assertion is cache eligible only
 after Backend checks the canonical asset row and explicitly returns
 `X-Testagram-Visibility: public`. Object keys commonly use
 `users/<owner>/<id>` for both public and private assets; the path itself is not
-a visibility signal. Current Backend origin is private-only; Backend issue
-#205 tracks the missing public branch. Until it lands, public CDN cache misses
-fail closed. Direct Cloudinary/R2 fallback is disabled to avoid bypassing
-canonical visibility. Authorization, visibility and deletion denials are
-authoritative. The CDN invalidates its local copy on explicit denials; Backend
-must also publish authenticated purge events for visibility/deletion changes.
-That purge integration is part of Backend issue #205.
+a visibility signal. Backend's canonical public-origin branch is implemented on the reviewed Backend mainline: a viewer assertion may be omitted only after Backend confirms the canonical asset is ready and public. The CDN must require the explicit `X-Testagram-Visibility: public` classification before shared caching. Direct provider fallback remains disabled. Authorization, visibility and deletion denials are authoritative. The CDN invalidates its local copy on explicit denials; Backend publishes authenticated purge events for visibility/deletion changes. The live cache-miss, purge and cache-isolation behavior still requires pinned staging acceptance.
 
 ## TV and HLS
 
