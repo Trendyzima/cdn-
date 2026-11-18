@@ -58,11 +58,7 @@ keys commonly use `users/<owner>/<id>` for both public and private media; the
 path prefix is not a visibility signal. Missing or non-public classification
 must fail closed.
 
-**Integration blocker:** current Backend `/internal/cdn/v1/{key...}` is
-private-only and requires a viewer assertion for every object. Backend issue
-#205 tracks the missing service-authenticated public-origin branch. Until it is
-merged and tested, public cache misses fail closed and direct Cloudinary/R2
-provider fallback is disabled.
+**Public-origin implementation:** the reviewed Backend mainline includes a service-authenticated public-origin branch. Backend may omit the viewer assertion only when its canonical metadata confirms the object is ready and public; the Go CDN must require the explicit `X-Testagram-Visibility: public` response before shared caching. Private objects still require the exact object/viewer-bound assertion and separate CDN origin credential. Direct provider fallback remains disabled. The deployed public cache-miss, purge and cache-isolation path is not accepted until staging tests pass.
 
 ## Cloudflare R2 Worker boundary
 
