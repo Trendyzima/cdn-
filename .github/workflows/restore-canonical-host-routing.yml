@@ -8,18 +8,9 @@ on:
         required: true
         type: boolean
         default: false
-      api_origin:
-        description: "Verified public InstaBox HTTPS URL for the Backend port 8080 (no path)"
-        required: true
-        type: string
-      cdn_origin:
-        description: "Verified public InstaBox HTTPS URL for the Go CDN port 8081 (no path)"
-        required: true
-        type: string
-      apex_origin:
-        description: "Verified public InstaBox HTTPS URL for the dedicated Caddy web/apex/Federation port 8443 (no path)"
-        required: true
-        type: string
+      # InstaBox publishes deterministic port hostnames for the selected machine.
+      # Derive all three origins from machine_id; never ask an operator to
+      # paste a hostname or accidentally place the machine ID in an origin field.
       machine_id:
         description: "Exact InstaBox machine ID for testagramdb; confirm against the Backend deployment summary"
         required: true
@@ -41,9 +32,6 @@ jobs:
     env:
       CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      API_ORIGIN: ${{ inputs.api_origin }}
-      CDN_ORIGIN: ${{ inputs.cdn_origin }}
-      APEX_ORIGIN: ${{ inputs.apex_origin }}
       MACHINE_ID: ${{ inputs.machine_id }}
       INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
       CONFIRM_CANONICAL_HOST_ROUTING: ${{ inputs.confirm_canonical_host_routing }}
@@ -64,6 +52,13 @@ jobs:
           test -n "$CF_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN."; exit 1; }
           test -n "$CF_ACCOUNT_ID" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID."; exit 1; }
           test -n "$INSTABOX_API_KEY" || { echo "::error::Missing INSTABOX_API_KEY repository secret for request-triggered machine recovery."; exit 1; }
+          [[ "$MACHINE_ID" =~ ^m_[a-z2-7]{26}$ ]] || { echo "::error::MACHINE_ID is not a valid InstaBox machine ID."; exit 1; }
+          MACHINE_SUFFIX="${MACHINE_ID#m_}"
+          API_ORIGIN="https://8080-${MACHINE_SUFFIX}.instabox.tech"
+          CDN_ORIGIN="https://8081-${MACHINE_SUFFIX}.instabox.tech"
+          APEX_ORIGIN="https://8443-${MACHINE_SUFFIX}.instabox.tech"
+          export API_ORIGIN CDN_ORIGIN APEX_ORIGIN
+          echo "Derived API, CDN and Caddy origins from the selected InstaBox machine and published port numbers."
           python3 - "$API_ORIGIN" "$CDN_ORIGIN" "$APEX_ORIGIN" "$MACHINE_ID" <<'PY'
           import ipaddress, re, sys
           from urllib.parse import urlparse
