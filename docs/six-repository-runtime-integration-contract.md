@@ -1,7 +1,7 @@
 # Testagram seven-repository runtime integration contract
 
 Status: implementation and staging contract; not production cutover authorization.
-Reviewed: 2026-11-13.
+Reviewed: 2026-11-18.
 
 Each repository owns its domain. No repository may bypass Backend product
 authorization or become a second source of truth. The shared `testagram-api`
@@ -12,8 +12,8 @@ it is not a runtime gateway.
 
 | Repository | Runtime responsibility | Allowed communication |
 |---|---|---|
-| `testagram-flutter-client-` | Flutter UI, navigation, local presentation and Appwrite session acquisition | Public authenticated Backend API and canonical public media URLs |
-| `Testagram-backend-` | Canonical identity bridge, authorization, social records, media lifecycle, orchestration and outboxes | Appwrite Auth; private Algorithm, Data Centre and Federation APIs; CDN media URLs |
+| `testagram-flutter-client-` | Flutter UI, navigation, local presentation and Testagram-native session and refresh client | Public authenticated Backend API and canonical public media URLs |
+| `Testagram-backend-` | Canonical identity bridge, authorization, social records, media lifecycle, orchestration and outboxes | Testagram-native identity/session authority; private Algorithm, Data Centre and Federation APIs; CDN media URLs |
 | `the-algorithm` | Stateless ranking of already-authorized bounded candidates | Private Backend ranking API only |
 | `federated-content` | ActivityPub actors, keys, inbox/outbox, signature verification and remote delivery | Private Backend actor/outbox APIs; remote ActivityPub peers |
 | `Testagram-data-centre-` | Storage placement, video processing, replication, repair, restore, VPS/runtime deployment and operations | Private Backend/platform network; storage providers and node agents |
@@ -23,7 +23,7 @@ it is not a runtime gateway.
 ## Canonical request paths
 
 ### Flutter -> Backend
-- Flutter obtains an Appwrite session JWT and sends it as `Authorization: Bearer <JWT>`.
+- Flutter obtains a short-lived Testagram-native access JWT from Backend login and sends it as `Authorization: Bearer <JWT>`. The opaque rotating refresh token is stored only in platform secure storage and is sent only to Backend refresh.
 - Backend validates the session and derives canonical user identity server-side.
 - Flutter must not call Algorithm, Federation, Data Centre platform APIs, PostgreSQL or storage-provider credentials directly.
 - Client API base is configured through `TESTAGRAM_API_URL`; no private service URL or secret belongs in a Flutter build.
@@ -51,7 +51,7 @@ it is not a runtime gateway.
 ### Backend -> Go CDN -> trusted Backend origin -> storage
 - Backend owns upload intent, canonical object key, authorization, visibility, quota, retention and deletion.
 - Backend returns stable media URLs under `https://media.testagram.site/v1/` only when the Go CDN hostname and origin are deployed.
-- Requests without viewer assertions may enter shared cache only after Backend checks the canonical asset row and explicitly returns `X-Testagram-Visibility: public`; object-key prefixes are not visibility authority. Current Backend origin is private-only; Backend issue #205 tracks the required public branch. Until then, public cache misses fail closed and direct provider fallback stays disabled.
+- Requests without viewer assertions may enter shared cache only after Backend checks the canonical asset row and explicitly returns `X-Testagram-Visibility: public`; object-key prefixes are not visibility authority. The reviewed Backend mainline implements the service-authenticated public-origin branch: public cache misses are cache-eligible only after Backend confirms canonical metadata is ready and public. The Go CDN must require `X-Testagram-Visibility: public`; direct provider fallback remains disabled. Live cache-miss, purge and cache-isolation behavior remains a staging acceptance gate.
 - Private Flutter requests send a short-lived Backend assertion in `Authorization: Bearer <assertion>`.
 - Go CDN relays it to the trusted origin as `X-Testagram-Viewer-Authorization` and sends a separate service credential as `X-Testagram-Origin-Auth`. The Backend origin verifies both and checks the canonical asset row.
 - Private requests bypass CDN cache, shield and public-origin fallback. Responses are `private, no-store`.
@@ -75,6 +75,9 @@ it is not a runtime gateway.
 - Readiness must include required dependencies, not merely process liveness.
 - Update producer, consumer, shared contract and fixtures together before changing a contract.
 - API source pins must reference immutable commits and match the tested source checkout.
+
+## API contract control plane (`testagram-api`)
+- Owns OpenAPI, internal schemas, event contracts, SDKs, source pins and compatibility CI; it is not a runtime hop, API gateway or identity provider.
 
 ## Known integration gates
 - Backend -> Data Centre media lifecycle endpoints and real provider operations require end-to-end proof.
