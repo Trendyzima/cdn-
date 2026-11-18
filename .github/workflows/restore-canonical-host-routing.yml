@@ -32,8 +32,10 @@ jobs:
     env:
       CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      MACHINE_ID: ${{ inputs.machine_id }}
-      INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+      # Reuse the already-provisioned Backend deployment credentials; retain
+      # the older secret name only as a compatibility fallback.
+      MACHINE_ID: ${{ secrets.INSTABOX_MACHINE_ID || inputs.machine_id }}
+      INSTABOX_API_KEY: ${{ secrets.TESTAGRAM_DB_API || secrets.INSTABOX_API_KEY }}
       CONFIRM_CANONICAL_HOST_ROUTING: ${{ inputs.confirm_canonical_host_routing }}
     steps:
       - uses: actions/checkout@v4
