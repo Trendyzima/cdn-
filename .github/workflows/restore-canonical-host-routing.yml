@@ -45,6 +45,7 @@ jobs:
           node-version: 22
 
       - name: Validate origins and prove both upstream services before cutover
+        id: validate_origins
         shell: bash
         run: |
           set -euo pipefail
@@ -152,6 +153,11 @@ jobs:
             exit 1
           fi
           echo "API, CDN, www Flutter web and apex Federation origins identify the expected services; private API/CDN health and media boundaries are preserved."
+          {
+            echo "api_origin=$API_ORIGIN"
+            echo "cdn_origin=$CDN_ORIGIN"
+            echo "apex_origin=$APEX_ORIGIN"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Preflight Cloudflare zone and existing hostname ownership
         id: preflight
@@ -409,7 +415,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloudflare
-          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ inputs.api_origin }}" --var "CDN_ORIGIN:${{ inputs.cdn_origin }}" --var "APEX_ORIGIN:${{ inputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ steps.validate_origins.outputs.api_origin }}" --var "CDN_ORIGIN:${{ steps.validate_origins.outputs.cdn_origin }}" --var "APEX_ORIGIN:${{ steps.validate_origins.outputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
 
       - name: Verify canonical API, Go CDN, Flutter web and apex identities
         id: verify_gateway
