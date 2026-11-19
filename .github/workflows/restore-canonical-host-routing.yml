@@ -477,6 +477,46 @@ jobs:
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
+          check_public_federation() {
+            local dir="$1" resource actor_url status content_type
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/json' -D "$dir/nodeinfo-discovery.headers" -o "$dir/nodeinfo-discovery.json" -w '%{http_code}' "https://testagram.site/.well-known/nodeinfo?release_probe=$GITHUB_RUN_ID" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/nodeinfo-discovery.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || "$content_type" != application/json* ]] || ! jq -e '.links | any(.rel == "http://nodeinfo.diaspora.software/ns/schema/2.1" and .href == "https://testagram.site/nodeinfo/2.1")' "$dir/nodeinfo-discovery.json" >/dev/null 2>&1; then
+              echo "::warning::Public apex NodeInfo discovery is not valid yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/json' -D "$dir/nodeinfo.headers" -o "$dir/nodeinfo.json" -w '%{http_code}' "https://testagram.site/nodeinfo/2.1?release_probe=$GITHUB_RUN_ID" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/nodeinfo.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || "$content_type" != application/json* ]] || ! jq -e '.version == "2.1" and .software.name == "testagram" and (.protocols | index("activitypub") != null)' "$dir/nodeinfo.json" >/dev/null 2>&1; then
+              echo "::warning::Public apex NodeInfo 2.1 document is not valid yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            resource="acct:crissbeat@testagram.site"
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/jrd+json' --get --data-urlencode "resource=$resource" -D "$dir/webfinger.headers" -o "$dir/webfinger.json" -w '%{http_code}' "https://testagram.site/.well-known/webfinger" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/webfinger.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || ( "$content_type" != application/jrd+json* && "$content_type" != application/json* ) ]] || ! jq -e --arg resource "$resource" '.subject == $resource and (.links | any(.rel == "self" and .type == "application/activity+json" and .href == "https://testagram.site/users/crissbeat"))' "$dir/webfinger.json" >/dev/null 2>&1; then
+              echo "::warning::The real production account has not resolved through public WebFinger yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            actor_url="$(jq -r '.links[] | select(.rel == "self" and .type == "application/activity+json") | .href' "$dir/webfinger.json" | head -n1)"
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/activity+json' -D "$dir/actor.headers" -o "$dir/actor.json" -w '%{http_code}' "$actor_url" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/actor.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || "$content_type" != application/activity+json* ]] || ! jq -e --arg actor "$actor_url" '.type == "Person" and .id == $actor and .preferredUsername == "crissbeat" and .publicKey.owner == $actor and (.publicKey.publicKeyPem | type == "string" and contains("BEGIN PUBLIC KEY"))' "$dir/actor.json" >/dev/null 2>&1; then
+              echo "::warning::The public ActivityPub actor document is not valid yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            resource="acct:testagram-preflight-nonexistent-2026@testagram.site"
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/jrd+json' --get --data-urlencode "resource=$resource" -o "$dir/unknown.json" -w '%{http_code}' "https://testagram.site/.well-known/webfinger" || true)"
+            if [[ "$status" != "404" ]] || ! jq -e '.error == "account_not_found"' "$dir/unknown.json" >/dev/null 2>&1; then
+              echo "::warning::The public WebFinger unknown-account negative control is not correct yet (HTTP $status)."
+              return 1
+            fi
+            return 0
+          }
           for attempt in $(seq 1 30); do
             api_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/api.headers" -o "$tmp/api.json" -w '%{http_code}' "https://api.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
             api_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
@@ -487,7 +527,6 @@ jobs:
             media_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
             apex_health="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/apex-health.json" -w '%{http_code}' "https://testagram.site/_testagram/edge-health?release_probe=$GITHUB_RUN_ID" || true)"
             apex_root="$(curl -sS --connect-timeout 5 --max-time 15 -D "$tmp/apex-root.headers" -o /dev/null -w '%{http_code}' "https://testagram.site/?release_probe=$GITHUB_RUN_ID" || true)"
-            apex_webfinger="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/apex-webfinger.json" -w '%{http_code}' "https://testagram.site/.well-known/webfinger?resource=acct:nonexistent-probe@invalid.testagram.site" || true)"
             www_health="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/www-health.json" -w '%{http_code}' "https://www.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
             www_root="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/www-root.html" -w '%{http_code}' "https://www.testagram.site/?release_probe=$GITHUB_RUN_ID" || true)"
             if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" && "$tv_catalog_status" == "401" ]] &&
@@ -503,7 +542,10 @@ jobs:
                [[ "$www_health" == "200" && "$www_root" == "200" ]] &&
                jq -e '.ok == true and .service == "testagram-web"' "$tmp/www-health.json" >/dev/null &&
                grep -Fq 'flutter_bootstrap.js' "$tmp/www-root.html"; then
-              case "$apex_webfinger" in 200|400|404) ;; *) echo "::error::Public apex WebFinger route failed (HTTP $apex_webfinger)."; cat "$tmp/apex-webfinger.json"; exit 1 ;; esac
+              if ! check_public_federation "$tmp"; then
+                sleep 10
+                continue
+              fi
               private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
               case "$private_status" in 401|403|404) ;; *) echo "::error::Canonical CDN allowed unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;; esac
               echo "api.testagram.site, media.testagram.site, www.testagram.site and testagram.site identify their pinned services; apex redirects to the self-hosted Flutter frontend and WebFinger reaches Federation."
@@ -511,7 +553,7 @@ jobs:
             fi
             sleep 10
           done
-          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics APEX_HEALTH=$apex_health APEX_ROOT=$apex_root APEX_WEBFINGER=$apex_webfinger WWW_HEALTH=$www_health WWW_ROOT=$www_root."
+          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics APEX_HEALTH=$apex_health APEX_ROOT=$apex_root APEX_FEDERATION=not-ready WWW_HEALTH=$www_health WWW_ROOT=$www_root."
           cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
           exit 1
 
