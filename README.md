@@ -182,13 +182,20 @@ Unauthenticated cache misses are eligible for shared caching only when the
 trusted Backend origin explicitly returns `X-Testagram-Visibility: public`
 after checking the canonical asset row. A path prefix is not proof of
 visibility; Testagram media keys commonly use `users/<owner>/<id>` for both
-public and private assets. The current Backend `/internal/cdn/v1/*` handler is
-private-only, so the public cache-miss integration remains blocked by
-[Backend issue #205](https://github.com/Trendyzima/Testagram-backend-/issues/205).
-The CDN fails closed until that public-origin contract is implemented. Direct
-object-store fallbacks are intentionally absent because they bypass Backend visibility.
-Unclassified, private or denied origin responses are never cached or served
-stale. A 401/403/404 origin response invalidates any cached public copy.
+public and private assets. The canonical Backend `/internal/cdn/v1/*` handler
+now implements this per-object public/private classification, and Backend
+issue #205 tracks live origin/cache-miss/purge acceptance rather than missing
+source code. Direct object-store fallbacks are intentionally absent because
+they bypass Backend visibility. Unclassified, private or denied origin
+responses are never cached or served stale. A 401/403/404 origin response
+invalidates any cached public copy.
+
+**Production status:** source-level Backend-to-Go-CDN authorization and
+streaming tests are present, but `media.testagram.site` has not yet completed
+the guarded Worker-to-Go-CDN cutover. The live hostname still needs the
+digest-pinned Go CDN deployment, private-origin authentication, public cache
+miss, viewer-bound private access/denial, purge, HEAD/range and HLS acceptance.
+See [CDN issue #61](https://github.com/Trendyzima/cdn-/issues/61).
 
 Private media requests carry a Backend-issued assertion in
 `Authorization: Bearer <assertion>`. The Go CDN forwards it to the trusted
