@@ -653,4 +653,11 @@ test("canonical production cutover verifies real public federation contracts aft
   assert.match(workflow, /account_not_found/);
   assert.match(workflow, /check_public_federation "\$tmp"/);
   assert.doesNotMatch(workflow, /apex_webfinger=.*nonexistent-probe@invalid\.testagram\.site/);
+  assert.match(workflow, /legacy_webfinger_route_id/);
+  assert.ok(workflow.includes("testagram.site/.well-known/webfinger*"));
+  assert.match(workflow, /legacy_script.*testagram-web/);
+  assert.match(workflow, /The exact legacy WebFinger route changed after preflight/);
+  assert.match(workflow, /Remove the exact stale WebFinger route from Flutter Pages Worker/);
+  assert.match(workflow, /conflicting WebFinger route remains after deletion/);
+  assert.ok(workflow.indexOf("Remove the exact stale WebFinger route from Flutter Pages Worker") < workflow.indexOf("Deploy Worker gateway on canonical API, media, www and apex hostnames"));
 });
