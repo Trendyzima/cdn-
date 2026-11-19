@@ -506,30 +506,6 @@ jobs:
           echo "::error::The conflicting WebFinger route remains after deletion; refusing to deploy the canonical catch-all."
           exit 1
 
-      - name: Remove the exact stale WebFinger route from Flutter Pages Worker
-        if: steps.preflight.outputs.legacy_webfinger_route_id != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          API=https://api.cloudflare.com/client/v4
-          zone_id="${{ steps.preflight.outputs.zone_id }}"
-          route_id="${{ steps.preflight.outputs.legacy_webfinger_route_id }}"
-          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
-          jq -e --arg id "$route_id" '.success == true and any(.result[]?; .id == $id and .pattern == "testagram.site/.well-known/webfinger*" and .script == "testagram-web")' <<<"$routes" >/dev/null || {
-            echo "::error::The exact legacy WebFinger route changed after preflight; refusing to delete an unexpected route."
-            exit 1
-          }
-          curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/zones/$zone_id/workers/routes/$route_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
-          for attempt in $(seq 1 30); do
-            remaining="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
-            if ! jq -e '.result[]? | select(.pattern == "testagram.site/.well-known/webfinger*")' <<<"$remaining" >/dev/null; then
-              echo "Verified the stale WebFinger-to-Flutter route is removed; the canonical apex Worker can now receive WebFinger and NodeInfo requests."
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::The conflicting WebFinger route remains after deletion; refusing to deploy the canonical catch-all."
-          exit 1
       - name: Deploy Worker gateway on canonical API, media, www and apex hostnames
         id: deploy_gateway
         uses: cloudflare/wrangler-action@v3
