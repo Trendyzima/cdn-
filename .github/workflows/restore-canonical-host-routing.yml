@@ -291,6 +291,411 @@ jobs:
 
           done
 
+          # The production audit found a more-specific legacy route that sends
+          # WebFinger to the Flutter Pages Worker. It wins over testagram.site/*,
+          # so capture and remove only this exact known stale route.
+          legacy_webfinger_route_id=""
+          legacy_webfinger_routes="$(jq -r '.result[]? | select(.pattern=="testagram.site/.well-known/webfinger*") | [.script,.id] | @tsv' <<<"$routes")"
+          legacy_webfinger_count="$(printf '%s\n' "$legacy_webfinger_routes" | awk 'NF { count++ } END { print count+0 }')"
+          [[ "$legacy_webfinger_count" -le 1 ]] || {
+            echo "::error::Multiple legacy WebFinger routes exist; refusing ambiguous ownership cleanup."
+            exit 1
+          }
+          if [[ -n "$legacy_webfinger_routes" ]]; then
+            IFS=
+          # hostname is already attached to the Worker.
+          buckets="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/r2/buckets?per_page=1000" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.cursor // "") == "")' <<<"$buckets" >/dev/null || {
+            echo "::error::Could not enumerate every R2 bucket; verify Workers R2 Storage Read/Write permissions and bucket pagination."
+            jq -c '.errors // []' <<<"$buckets"; exit 1;
+          }
+          r2_match_file="$(mktemp)"
+          trap 'rm -f "$r2_match_file"' EXIT
+          while IFS= read -r bucket; do
+            [[ -n "$bucket" ]] || continue
+            custom="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$bucket/domains/custom" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$custom" >/dev/null || {
+              echo "::error::Could not inspect R2 custom-domain ownership for a bucket; refusing cutover."
+              jq -c '.errors // []' <<<"$custom"; exit 1;
+            }
+            jq -c --arg bucket "$bucket" '.domains[]? | select(.domain=="media.testagram.site") | . + {bucket:$bucket}' <<<"$custom" >> "$r2_match_file"
+          done < <(jq -r '.result.buckets[]?.name' <<<"$buckets")
+          r2_count="$(wc -l < "$r2_match_file" | tr -d ' ')"
+          [[ "$r2_count" -le 1 ]] || {
+            echo "::error::media.testagram.site is attached to multiple R2 buckets; refusing ambiguous ownership transfer."
+            exit 1;
+          }
+          worker_domain="$(jq -c --arg host "media.testagram.site" --arg zone "$zone_id" '.result[]? | select(.hostname==$host and .zone_id==$zone)' <<<"$domains" | head -n 1)"
+          if [[ "$r2_count" == "1" ]]; then
+            r2_owner="$(cat "$r2_match_file")"
+            [[ "$(jq -r '.status.ownership // empty' <<<"$r2_owner")" == "active" && "$(jq -r '.status.ssl // empty' <<<"$r2_owner")" == "active" && "$(jq -r '.enabled // false' <<<"$r2_owner")" == "true" ]] || {
+              echo "::error::R2 custom domain ownership, TLS or enabled state is not healthy; refusing cutover."
+              exit 1;
+            }
+            [[ -z "$worker_domain" ]] || {
+              echo "::error::media.testagram.site is simultaneously listed as an R2 domain and Worker custom domain; refusing ambiguous ownership."
+              exit 1;
+            }
+            echo "r2_bucket=$(jq -r '.bucket' <<<"$r2_owner")" >> "$GITHUB_OUTPUT"
+            echo "r2_domain=$(jq -c '{domain,enabled,zoneId,ciphers,minTLS} | with_entries(select(.value != null))' <<<"$r2_owner" | base64 -w0)" >> "$GITHUB_OUTPUT"
+            echo "media.testagram.site is currently owned by one active R2 bucket; a controlled Worker transfer is required."
+          elif [[ -n "$worker_domain" ]]; then
+            [[ "$(jq -r '.service' <<<"$worker_domain")" == "testagram-cdn" ]] || {
+              echo "::error::media.testagram.site is attached to an unexpected Worker; refusing cutover."
+              exit 1;
+            }
+            echo "r2_bucket=" >> "$GITHUB_OUTPUT"
+            echo "r2_domain=" >> "$GITHUB_OUTPUT"
+            echo "media.testagram.site is already attached to the canonical testagram-cdn Worker."
+          else
+            echo "::error::media.testagram.site has no verifiable R2 or canonical Worker owner; refusing to overwrite routing."
+            exit 1
+          fi
+
+          apex_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$apex_dns" >/dev/null || {
+            echo "::error::testagram.site must have an existing proxied A/AAAA/CNAME record for its exact Worker Route. No DNS records will be changed."
+            jq -c '.errors // .result' <<<"$apex_dns"; exit 1;
+          }
+          api_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
+            echo "::error::api.testagram.site must have an existing proxied A/AAAA/CNAME record for its Worker Route. No DNS records will be changed."
+            jq -c '.errors // .result' <<<"$api_dns"; exit 1;
+          }
+          www_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=www.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$www_dns" >/dev/null || {
+            echo "::error::www.testagram.site must have an existing proxied A/AAAA/CNAME record for its exact Worker Route. No DNS records will be changed."
+            jq -c '.errors // .result' <<<"$www_dns"; exit 1;
+          }
+          echo "Cloudflare zone, exact Pages apex/www ownership, Worker ownership/routes and proxied apex/API/www DNS passed preflight. Only the verified Pages apex and www associations may be detached during the confirmed cutover; DNS records will not be changed."
+
+      - name: Test canonical gateway contract
+        working-directory: cloudflare
+        run: npm test
+
+      - name: Capture the active Cloudflare deployment for emergency manual rollback
+        id: previous_deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          deployments="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-cdn/deployments?per_page=100&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result.deployments | length >= 1)' <<<"$deployments" >/dev/null || {
+            echo "::error::Cannot capture the current Cloudflare Worker deployment; refusing a cutover without rollback."
+            jq -c '.errors // []' <<<"$deployments"
+            exit 1
+          }
+          versions="$(jq -c '.result.deployments[0].versions' <<<"$deployments")"
+          jq -e 'type == "array" and length > 0 and all(.[]; (.version_id | type == "string" and length > 0) and (.percentage | type == "number" and . > 0))' <<<"$versions" >/dev/null || {
+            echo "::error::The active Cloudflare deployment has no valid version split; refusing a cutover without rollback."
+            exit 1
+          }
+          jq -e '([.[].percentage] | add) == 100' <<<"$versions" >/dev/null || {
+            echo "::error::The active Cloudflare deployment does not route exactly 100 percent of traffic; refusing an unsafe rollback snapshot."
+            exit 1
+          }
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "Captured the active Cloudflare deployment version split for rollback."
+
+      - name: Release the existing R2 custom-domain binding for Go CDN ownership
+        id: detach_r2_domain
+        if: steps.preflight.outputs.r2_bucket != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          BUCKET="${{ steps.preflight.outputs.r2_bucket }}"
+          curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom/media.testagram.site" \
+            -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          for attempt in $(seq 1 30); do
+            state="$(curl --retry 2 --retry-all-errors -fsS \
+              "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+              -H "Authorization: Bearer $CF_API_TOKEN")"
+            if ! jq -e '.domains[]? | select(.domain=="media.testagram.site")' <<<"$state" >/dev/null; then
+              echo "R2 custom-domain binding released; bucket and objects remain untouched."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::R2 custom-domain binding did not detach; refusing Worker deployment."
+          exit 1
+
+      - name: Store the InstaBox recovery credential as a Cloudflare Worker secret
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
+          printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
+
+      - name: Detach only the verified apex and www hostnames from Flutter Pages
+        if: steps.preflight.outputs.pages_attached == 'true' || steps.preflight.outputs.www_pages_attached == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          base="$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains"
+          for domain in testagram.site www.testagram.site; do
+            endpoint="$base/$domain"
+            current_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/pages-domain-current.json -w '%{http_code}' "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+            if [[ "$current_status" == "404" ]]; then
+              echo "$domain is already detached from Pages."
+              continue
+            fi
+            if [[ "$current_status" != "200" ]] || ! jq -e --arg domain "$domain" '.success == true and .result.name == $domain' /tmp/pages-domain-current.json >/dev/null; then
+              echo "::error::The exact Pages association for $domain changed after preflight; refusing to detach an unexpected hostname."
+              jq -c '{errors,result}' /tmp/pages-domain-current.json 2>/dev/null || true
+              exit 1
+            fi
+            removed="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true' <<<"$removed" >/dev/null || {
+              echo "::error::Cloudflare did not confirm removal of the exact $domain Pages association."
+              jq -c '{errors,result}' <<<"$removed"; exit 1;
+            }
+            detached=false
+            for attempt in $(seq 1 30); do
+              status="$(curl -sS --connect-timeout 5 --max-time 10 -o /tmp/pages-domain-detached.json -w '%{http_code}' "$endpoint" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+              if [[ "$status" == "404" ]]; then detached=true; break; fi
+              sleep 2
+            done
+            [[ "$detached" == "true" ]] || {
+              echo "::error::Cloudflare did not confirm that $domain detached from Pages after 60 seconds."
+              jq -c '{errors,result}' /tmp/pages-domain-detached.json 2>/dev/null || true
+              exit 1
+            }
+            echo "Verified $domain is detached from Flutter Pages; DNS and the Pages project remain untouched."
+          done
+
+      - name: Remove the exact stale WebFinger route from Flutter Pages Worker
+        if: steps.preflight.outputs.legacy_webfinger_route_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zone_id="${{ steps.preflight.outputs.zone_id }}"
+          route_id="${{ steps.preflight.outputs.legacy_webfinger_route_id }}"
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e --arg id "$route_id" '.success == true and any(.result[]?; .id == $id and .pattern == "testagram.site/.well-known/webfinger*" and .script == "testagram-web")' <<<"$routes" >/dev/null || {
+            echo "::error::The exact legacy WebFinger route changed after preflight; refusing to delete an unexpected route."
+            exit 1
+          }
+          curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/zones/$zone_id/workers/routes/$route_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          for attempt in $(seq 1 30); do
+            remaining="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+            if ! jq -e '.result[]? | select(.pattern == "testagram.site/.well-known/webfinger*")' <<<"$remaining" >/dev/null; then
+              echo "Verified the stale WebFinger-to-Flutter route is removed; the canonical apex Worker can now receive WebFinger and NodeInfo requests."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::The conflicting WebFinger route remains after deletion; refusing to deploy the canonical catch-all."
+          exit 1
+
+      - name: Deploy Worker gateway on canonical API, media, www and apex hostnames
+        id: deploy_gateway
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ steps.validate_origins.outputs.api_origin }}" --var "CDN_ORIGIN:${{ steps.validate_origins.outputs.cdn_origin }}" --var "APEX_ORIGIN:${{ steps.validate_origins.outputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
+
+      - name: Verify canonical API, Go CDN, Flutter web and apex identities
+        id: verify_gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          check_public_federation() {
+            local dir="$1" resource actor_url status content_type
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/json' -D "$dir/nodeinfo-discovery.headers" -o "$dir/nodeinfo-discovery.json" -w '%{http_code}' "https://testagram.site/.well-known/nodeinfo?release_probe=$GITHUB_RUN_ID" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/nodeinfo-discovery.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || "$content_type" != application/json* ]] || ! jq -e '.links | any(.rel == "http://nodeinfo.diaspora.software/ns/schema/2.1" and .href == "https://testagram.site/nodeinfo/2.1")' "$dir/nodeinfo-discovery.json" >/dev/null 2>&1; then
+              echo "::warning::Public apex NodeInfo discovery is not valid yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/json' -D "$dir/nodeinfo.headers" -o "$dir/nodeinfo.json" -w '%{http_code}' "https://testagram.site/nodeinfo/2.1?release_probe=$GITHUB_RUN_ID" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/nodeinfo.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || "$content_type" != application/json* ]] || ! jq -e '.version == "2.1" and .software.name == "testagram" and (.protocols | index("activitypub") != null)' "$dir/nodeinfo.json" >/dev/null 2>&1; then
+              echo "::warning::Public apex NodeInfo 2.1 document is not valid yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            resource="acct:crissbeat@testagram.site"
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/jrd+json' --get --data-urlencode "resource=$resource" -D "$dir/webfinger.headers" -o "$dir/webfinger.json" -w '%{http_code}' "https://testagram.site/.well-known/webfinger" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/webfinger.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || ( "$content_type" != application/jrd+json* && "$content_type" != application/json* ) ]] || ! jq -e --arg resource "$resource" '.subject == $resource and (.links | any(.rel == "self" and .type == "application/activity+json" and .href == "https://testagram.site/users/crissbeat"))' "$dir/webfinger.json" >/dev/null 2>&1; then
+              echo "::warning::The real production account has not resolved through public WebFinger yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            actor_url="$(jq -r '.links[] | select(.rel == "self" and .type == "application/activity+json") | .href' "$dir/webfinger.json" | head -n1)"
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/activity+json' -D "$dir/actor.headers" -o "$dir/actor.json" -w '%{http_code}' "$actor_url" || true)"
+            content_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$dir/actor.headers" | tail -n1 | tr '[:upper:]' '[:lower:]')"
+            if [[ "$status" != "200" || "$content_type" != application/activity+json* ]] || ! jq -e --arg actor "$actor_url" '.type == "Person" and .id == $actor and .preferredUsername == "crissbeat" and .publicKey.owner == $actor and (.publicKey.publicKeyPem | type == "string" and contains("BEGIN PUBLIC KEY"))' "$dir/actor.json" >/dev/null 2>&1; then
+              echo "::warning::The public ActivityPub actor document is not valid yet (HTTP $status; $content_type)."
+              return 1
+            fi
+
+            resource="acct:testagram-preflight-nonexistent-2026@testagram.site"
+            status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Accept: application/jrd+json' --get --data-urlencode "resource=$resource" -o "$dir/unknown.json" -w '%{http_code}' "https://testagram.site/.well-known/webfinger" || true)"
+            if [[ "$status" != "404" ]] || ! jq -e '.error == "account_not_found"' "$dir/unknown.json" >/dev/null 2>&1; then
+              echo "::warning::The public WebFinger unknown-account negative control is not correct yet (HTTP $status)."
+              return 1
+            fi
+            return 0
+          }
+          for attempt in $(seq 1 30); do
+            api_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/api.headers" -o "$tmp/api.json" -w '%{http_code}' "https://api.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            api_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
+            api_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://api.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            tv_catalog_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/tv-catalog" -w '%{http_code}' "https://api.testagram.site/internal/tv/catalog?release_probe=$GITHUB_RUN_ID" || true)"
+            media_status="$(curl -sS --connect-timeout 5 --max-time 15 -H 'Cache-Control: no-cache' -D "$tmp/media.headers" -o "$tmp/media.json" -w '%{http_code}' "https://media.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            media_ready="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/readyz?release_probe=$GITHUB_RUN_ID" || true)"
+            media_metrics="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "https://media.testagram.site/metrics?release_probe=$GITHUB_RUN_ID" || true)"
+            apex_health="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/apex-health.json" -w '%{http_code}' "https://testagram.site/_testagram/edge-health?release_probe=$GITHUB_RUN_ID" || true)"
+            apex_root="$(curl -sS --connect-timeout 5 --max-time 15 -D "$tmp/apex-root.headers" -o /dev/null -w '%{http_code}' "https://testagram.site/?release_probe=$GITHUB_RUN_ID" || true)"
+            www_health="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/www-health.json" -w '%{http_code}' "https://www.testagram.site/healthz?release_probe=$GITHUB_RUN_ID" || true)"
+            www_root="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/www-root.html" -w '%{http_code}' "https://www.testagram.site/?release_probe=$GITHUB_RUN_ID" || true)"
+            if [[ "$api_status" == "200" && "$api_ready" == "404" && "$api_metrics" == "404" && "$tv_catalog_status" == "401" ]] &&
+               grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" &&
+               jq -e '.ok == true and .service == "testagram-api"' "$tmp/api.json" >/dev/null &&
+               [[ "$media_status" == "200" && "$media_ready" == "404" && "$media_metrics" == "404" ]] &&
+               grep -Eiq '^x-testagram-cdn:[[:space:]]*testagram-edge[[:space:]]*$' "$tmp/media.headers" &&
+               grep -Eiq '^x-testagram-cdn-version:[[:space:]]*2026-11-15-private-health-listener-v1[[:space:]]*$' "$tmp/media.headers" &&
+               jq -e '.ok == true and .service == "testagram-cdn"' "$tmp/media.json" >/dev/null &&
+               [[ "$apex_health" == "200" && "$apex_root" == "308" ]] &&
+               jq -e '.ok == true and .service == "testagram-apex-edge"' "$tmp/apex-health.json" >/dev/null &&
+               grep -Fqi 'https://www.testagram.site' "$tmp/apex-root.headers" &&
+               [[ "$www_health" == "200" && "$www_root" == "200" ]] &&
+               jq -e '.ok == true and .service == "testagram-web"' "$tmp/www-health.json" >/dev/null &&
+               grep -Fq 'flutter_bootstrap.js' "$tmp/www-root.html"; then
+              if ! check_public_federation "$tmp"; then
+                sleep 10
+                continue
+              fi
+              private_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/private" -w '%{http_code}' "https://media.testagram.site/v1/users/cdn-smoke/0123456789abcdef0123456789abcdef" || true)"
+              case "$private_status" in 401|403|404) ;; *) echo "::error::Canonical CDN allowed unauthenticated private media (HTTP $private_status)."; cat "$tmp/private"; exit 1 ;; esac
+              echo "api.testagram.site, media.testagram.site, www.testagram.site and testagram.site identify their pinned services; apex redirects to the self-hosted Flutter frontend and WebFinger reaches Federation."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Canonical hostname routing did not converge: API=$api_status API_READY=$api_ready API_METRICS=$api_metrics TV_CATALOG=$tv_catalog_status CDN=$media_status CDN_READY=$media_ready CDN_METRICS=$media_metrics APEX_HEALTH=$apex_health APEX_ROOT=$apex_root APEX_FEDERATION=not-ready WWW_HEALTH=$www_health WWW_ROOT=$www_root."
+          cat "$tmp/api.headers" "$tmp/api.json" "$tmp/media.headers" "$tmp/media.json" 2>/dev/null || true
+          exit 1
+
+      # Do not automatically roll back the Worker after API/apex cutover: an older
+      # version may not recognize the canonical apex route. The www-only failure
+      # recovery above removes only the www route before restoring its Pages owner.
+      - name: Restore www Pages ownership if the self-hosted web cutover fails
+        if: failure() && steps.preflight.outputs.www_pages_attached == 'true' && steps.verify_gateway.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zone_id="${{ steps.preflight.outputs.zone_id }}"
+          pages_endpoint="$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/www.testagram.site"
+          current_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/www-pages-rollback.json -w '%{http_code}' "$pages_endpoint" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
+          if [[ "$current_status" == "200" ]] && jq -e '.success == true and .result.name == "www.testagram.site"' /tmp/www-pages-rollback.json >/dev/null; then
+            echo "www.testagram.site is already attached to Pages; no rollback action is required."
+            exit 0
+          fi
+          [[ "$current_status" == "404" ]] || {
+            echo "::error::Cannot safely restore Pages because www domain ownership is ambiguous (HTTP $current_status)."
+            jq -c '{success,errors,result}' /tmp/www-pages-rollback.json 2>/dev/null || true
+            exit 1
+          }
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$routes" >/dev/null || {
+            echo "::error::Cannot enumerate Worker routes for safe www rollback; Pages will not be reattached."
+            exit 1
+          }
+          route="$(jq -c '.result[]? | select(.pattern=="www.testagram.site/*")' <<<"$routes" | head -n 1)"
+          if [[ -n "$route" ]]; then
+            script="$(jq -r '.script // empty' <<<"$route")"
+            route_id="$(jq -r '.id // empty' <<<"$route")"
+            [[ "$script" == "testagram-cdn" && -n "$route_id" ]] || {
+              echo "::error::Unexpected Worker owns www.testagram.site; refusing to remove it or reattach Pages."
+              exit 1
+            }
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/zones/$zone_id/workers/routes/$route_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          fi
+          verified_routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          if jq -e '.result[]? | select(.pattern=="www.testagram.site/*")' <<<"$verified_routes" >/dev/null; then
+            echo "::error::The www Worker route remains active; refusing to reattach Pages underneath it."
+            exit 1
+          fi
+          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST "$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" -d '{"name":"www.testagram.site"}')"
+          jq -e '.success == true' <<<"$restored" >/dev/null || {
+            echo "::error::Could not reattach www.testagram.site to the previous Flutter Pages origin."
+            jq -c '{errors,messages}' <<<"$restored"
+            exit 1
+          }
+          verify="$(curl --retry 2 --retry-all-errors -fsS "$pages_endpoint" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and .result.name == "www.testagram.site"' <<<"$verify" >/dev/null || {
+            echo "::error::Pages reattachment was accepted but could not be verified."
+            exit 1
+          }
+          echo "Restored and verified www.testagram.site on its previous Flutter Pages association. The apex and API/media routes were not changed."
+
+      - name: Restore the previous R2 hostname owner if Go CDN cutover fails
+        if: failure() && steps.preflight.outputs.r2_bucket != '' && steps.detach_r2_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          BUCKET="${{ steps.preflight.outputs.r2_bucket }}"
+          DOMAIN_JSON="$(echo '${{ steps.preflight.outputs.r2_domain }}' | base64 -d)"
+          workers="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          worker_id="$(jq -r '.result[]? | select(.hostname=="media.testagram.site" and .service=="testagram-cdn") | .id' <<<"$workers" | head -n 1)"
+          if [[ -n "$worker_id" ]]; then
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE \
+              "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$worker_id" \
+              -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          fi
+          current_r2="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          if jq -e '.domains[]? | select(.domain=="media.testagram.site")' <<<"$current_r2" >/dev/null; then
+            echo "Previous R2 binding is already present; no restore POST needed."
+            exit 0
+          fi
+          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" -d "$DOMAIN_JSON")"
+          jq -e '.success == true' <<<"$restored" >/dev/null || {
+            echo "::error::Automatic Worker-to-R2 rollback failed. Restore media.testagram.site to bucket $BUCKET manually using the captured R2 domain settings."
+            jq -c '.errors // []' <<<"$restored"; exit 1;
+          }
+          verify="$(curl --retry 2 --retry-all-errors -fsS \
+            "$API/accounts/$CF_ACCOUNT_ID/r2/buckets/$BUCKET/domains/custom/media.testagram.site" \
+            -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and .result.domain=="media.testagram.site" and .result.enabled==true' <<<"$verify" >/dev/null || {
+            echo "::error::R2 binding restore was accepted but could not be verified."
+            exit 1;
+          }
+          echo "Previous R2 hostname ownership restored and verified; no bucket objects were changed."\t' read -r legacy_script legacy_route_id <<<"$legacy_webfinger_routes"
+            [[ "$legacy_script" == "testagram-web" && -n "$legacy_route_id" ]] || {
+              echo "::error::The conflicting WebFinger route belongs to unexpected Worker $legacy_script; refusing to delete it."
+              exit 1
+            }
+            legacy_webfinger_route_id="$legacy_route_id"
+            echo "Captured exact stale WebFinger route $legacy_route_id owned by testagram-web for guarded removal."
+          fi
+          echo "legacy_webfinger_route_id=$legacy_webfinger_route_id" >> "$GITHUB_OUTPUT"
+
           # Discover the current R2 custom-domain owner instead of assuming the
           # hostname is already attached to the Worker.
           buckets="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/r2/buckets?per_page=1000" -H "Authorization: Bearer $CF_API_TOKEN")"
