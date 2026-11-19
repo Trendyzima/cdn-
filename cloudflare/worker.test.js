@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import worker from "./worker.js";
 
 const apiOrigin = "https://machine-api.instabox.sh";
@@ -639,4 +640,17 @@ test("returns a retryable 503 when the origin fails and wake credentials are abs
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error, "machine_wake_failed");
   assert.equal(response.headers.get("retry-after"), "5");
+});
+
+
+test("canonical production cutover verifies real public federation contracts after deployment", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
+  assert.match(workflow, /function check_public_federation/);
+  assert.match(workflow, /acct:crissbeat@testagram\.site/);
+  assert.match(workflow, /nodeinfo-discovery\.headers/);
+  assert.match(workflow, /nodeinfo\.json/);
+  assert.match(workflow, /actor\.json/);
+  assert.match(workflow, /account_not_found/);
+  assert.match(workflow, /check_public_federation "\$tmp"/);
+  assert.doesNotMatch(workflow, /apex_webfinger=.*nonexistent-probe@invalid\.testagram\.site/);
 });
