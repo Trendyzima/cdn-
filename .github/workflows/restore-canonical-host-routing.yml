@@ -131,7 +131,6 @@ jobs:
           esac
           apex_health="$(curl -sS --connect-timeout 5 --max-time 20 -o "$tmp/apex-health.json" -w '%{http_code}' "$APEX_ORIGIN/_testagram/edge-health" || true)"
           apex_root="$(curl -sS --connect-timeout 5 --max-time 20 -D "$tmp/apex-root.headers" -o /dev/null -w '%{http_code}' "$APEX_ORIGIN/" || true)"
-          apex_webfinger="$(curl -sS --connect-timeout 5 --max-time 20 -o "$tmp/apex-webfinger.json" -w '%{http_code}' "$APEX_ORIGIN/.well-known/webfinger?resource=acct:nonexistent-probe@invalid.testagram.site" || true)"
           if [[ "$apex_health" != "200" ]] || ! jq -e '.ok == true and .service == "testagram-apex-edge"' "$tmp/apex-health.json" >/dev/null; then
             echo "::error::APEX_ORIGIN is not serving the expected Caddy edge identity (HTTP $apex_health)."
             cat "$tmp/apex-health.json" 2>/dev/null || true
@@ -142,10 +141,53 @@ jobs:
             cat "$tmp/apex-root.headers"
             exit 1
           fi
-          case "$apex_webfinger" in
-            200|400|404) ;;
-            *) echo "::error::APEX_ORIGIN WebFinger path failed to reach Federation safely (HTTP $apex_webfinger)."; cat "$tmp/apex-webfinger.json" 2>/dev/null || true; exit 1 ;;
-          esac
+
+          # A 404 from an invalid hostname is not proof that WebFinger reached
+          # Federation. Require the canonical NodeInfo document and a real
+          # Backend-resolved account/actor before any hostname cutover.
+          nodeinfo_discovery_status="$(curl -sS --connect-timeout 5 --max-time 20 -H 'Accept: application/json' -D "$tmp/nodeinfo-discovery.headers" -o "$tmp/nodeinfo-discovery.json" -w '%{http_code}' "$APEX_ORIGIN/.well-known/nodeinfo" || true)"
+          nodeinfo_discovery_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$tmp/nodeinfo-discovery.headers" | tail -n1)"
+          if [[ "$nodeinfo_discovery_status" != "200" || "$nodeinfo_discovery_type" != *"application/json"* ]] ||
+             ! jq -e '.links | any(.rel == "http://nodeinfo.diaspora.software/ns/schema/2.1" and .href == "https://testagram.site/nodeinfo/2.1")' "$tmp/nodeinfo-discovery.json" >/dev/null 2>&1; then
+            echo "::error::APEX_ORIGIN NodeInfo discovery is not the canonical Testagram JSON endpoint (HTTP $nodeinfo_discovery_status)."
+            cat "$tmp/nodeinfo-discovery.json" 2>/dev/null || true
+            exit 1
+          fi
+          nodeinfo_status="$(curl -sS --connect-timeout 5 --max-time 20 -H 'Accept: application/json' -D "$tmp/nodeinfo.headers" -o "$tmp/nodeinfo.json" -w '%{http_code}' "$APEX_ORIGIN/nodeinfo/2.1" || true)"
+          nodeinfo_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$tmp/nodeinfo.headers" | tail -n1)"
+          if [[ "$nodeinfo_status" != "200" || "$nodeinfo_type" != *"application/json"* ]] ||
+             ! jq -e '.version == "2.1" and .software.name == "testagram" and (.protocols | index("activitypub") != null)' "$tmp/nodeinfo.json" >/dev/null 2>&1; then
+            echo "::error::APEX_ORIGIN NodeInfo 2.1 document is not a valid Testagram ActivityPub document (HTTP $nodeinfo_status)."
+            cat "$tmp/nodeinfo.json" 2>/dev/null || true
+            exit 1
+          fi
+
+          webfinger_status="$(curl -sS --connect-timeout 5 --max-time 20 -H 'Accept: application/jrd+json' -D "$tmp/webfinger.headers" -o "$tmp/webfinger.json" -w '%{http_code}' "$APEX_ORIGIN/.well-known/webfinger?resource=acct:crissbeat@testagram.site" || true)"
+          webfinger_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$tmp/webfinger.headers" | tail -n1)"
+          if [[ "$webfinger_status" != "200" || "$webfinger_type" != *"application/jrd+json"* ]] ||
+             ! jq -e '.subject == "acct:crissbeat@testagram.site" and (.links | any(.rel == "self" and .type == "application/activity+json" and .href == "https://testagram.site/users/crissbeat"))' "$tmp/webfinger.json" >/dev/null 2>&1; then
+            echo "::error::APEX_ORIGIN did not resolve the real canonical Testagram account through WebFinger (HTTP $webfinger_status)."
+            cat "$tmp/webfinger.json" 2>/dev/null || true
+            exit 1
+          fi
+          actor_url="$(jq -r '.links[] | select(.rel == "self" and .type == "application/activity+json") | .href' "$tmp/webfinger.json" | head -n1)"
+          actor_status="$(curl -sS --connect-timeout 5 --max-time 20 -H 'Accept: application/activity+json' -D "$tmp/actor.headers" -o "$tmp/actor.json" -w '%{http_code}' "$actor_url" || true)"
+          actor_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$tmp/actor.headers" | tail -n1)"
+          if [[ "$actor_status" != "200" || "$actor_type" != *"application/activity+json"* ]] ||
+             ! jq -e --arg actor "$actor_url" '.type == "Person" and .id == $actor and .preferredUsername == "crissbeat" and .publicKey.owner == $actor and (.publicKey.publicKeyPem | type == "string" and contains("BEGIN PUBLIC KEY"))' "$tmp/actor.json" >/dev/null 2>&1; then
+            echo "::error::APEX_ORIGIN actor document does not match the canonical WebFinger identity and public key (HTTP $actor_status)."
+            cat "$tmp/actor.json" 2>/dev/null || true
+            exit 1
+          fi
+
+          unknown_status="$(curl -sS --connect-timeout 5 --max-time 20 -H 'Accept: application/jrd+json' -D "$tmp/unknown.headers" -o "$tmp/unknown.json" -w '%{http_code}' "$APEX_ORIGIN/.well-known/webfinger?resource=acct:testagram-preflight-nonexistent-2026@testagram.site" || true)"
+          unknown_type="$(awk 'BEGIN{IGNORECASE=1} /^content-type:/{sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print}' "$tmp/unknown.headers" | tail -n1)"
+          if [[ "$unknown_status" != "404" || "$unknown_type" != *"application/json"* ]] ||
+             ! jq -e '.error == "account_not_found"' "$tmp/unknown.json" >/dev/null 2>&1; then
+            echo "::error::APEX_ORIGIN unknown-account negative control did not return structured Federation account_not_found (HTTP $unknown_status)."
+            cat "$tmp/unknown.json" 2>/dev/null || true
+            exit 1
+          fi
           www_health="$(curl -sS --connect-timeout 5 --max-time 20 -H 'X-Forwarded-Host: www.testagram.site' -o "$tmp/www-health.json" -w '%{http_code}' "$APEX_ORIGIN/healthz" || true)"
           www_root="$(curl -sS --connect-timeout 5 --max-time 20 -H 'X-Forwarded-Host: www.testagram.site' -o "$tmp/www-root.html" -w '%{http_code}' "$APEX_ORIGIN/" || true)"
           if [[ "$www_health" != "200" ]] || ! jq -e '.ok == true and .service == "testagram-web"' "$tmp/www-health.json" >/dev/null ||
