@@ -108,6 +108,15 @@ jobs:
             cat "$tmp/api.headers" "$tmp/api.json" 2>/dev/null || true
             exit 1
           fi
+          # The TV monitor's OIDC-protected route must exist on the selected
+          # Backend origin. A 401 without a token proves the handler is present;
+          # a 404 means the deployed Backend image is stale or the origin is wrong.
+          tv_catalog_status="$(curl -sS --connect-timeout 5 --max-time 15 -o "$tmp/tv-catalog-unauth.json" -w '%{http_code}' "$API_ORIGIN/internal/tv/catalog" || true)"
+          if [[ "$tv_catalog_status" != "401" ]]; then
+            echo "::error::Backend origin does not expose the protected TV catalogue handler (expected 401 without OIDC token, got HTTP $tv_catalog_status)."
+            cat "$tmp/tv-catalog-unauth.json" 2>/dev/null || true
+            exit 1
+          fi
           for path in /readyz /metrics; do
             status="$(curl -sS --connect-timeout 5 --max-time 15 -o /dev/null -w '%{http_code}' "$API_ORIGIN$path" || true)"
             [[ "$status" == "404" ]] || { echo "::error::Backend origin exposes private endpoint $path (HTTP $status)."; exit 1; }
