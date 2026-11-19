@@ -654,6 +654,7 @@ test("canonical production cutover verifies real public federation contracts aft
   assert.match(workflow, /check_public_federation "\$tmp"/);
   assert.doesNotMatch(workflow, /apex_webfinger=.*nonexistent-probe@invalid\.testagram\.site/);
   assert.match(workflow, /legacy_webfinger_route_id/);
+  assert.match(workflow, /testagram\\.site\\/\\.well-known\\/webfinger\\*/);
   assert.match(workflow, /legacy_script.*testagram-web/);
   assert.match(workflow, /The exact legacy WebFinger route changed after preflight/);
   assert.match(workflow, /Remove the exact stale WebFinger route from Flutter Pages Worker/);
