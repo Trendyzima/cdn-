@@ -482,6 +482,15 @@ jobs:
             echo "Verified $domain is detached from Flutter Pages; DNS and the Pages project remain untouched."
           done
 
+      - name: Deploy Worker gateway on canonical API, media, www and apex hostnames
+        id: deploy_gateway
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ steps.validate_origins.outputs.api_origin }}" --var "CDN_ORIGIN:${{ steps.validate_origins.outputs.cdn_origin }}" --var "APEX_ORIGIN:${{ steps.validate_origins.outputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
+
       - name: Remove the exact stale WebFinger route from Flutter Pages Worker
         if: steps.preflight.outputs.legacy_webfinger_route_id != ''
         shell: bash
@@ -506,14 +515,6 @@ jobs:
           done
           echo "::error::The conflicting WebFinger route remains after deletion; refusing to deploy the canonical catch-all."
           exit 1
-      - name: Deploy Worker gateway on canonical API, media, www and apex hostnames
-        id: deploy_gateway
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare
-          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ steps.validate_origins.outputs.api_origin }}" --var "CDN_ORIGIN:${{ steps.validate_origins.outputs.cdn_origin }}" --var "APEX_ORIGIN:${{ steps.validate_origins.outputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
 
       - name: Verify canonical API, Go CDN, Flutter web and apex identities
         id: verify_gateway
