@@ -659,5 +659,8 @@ test("canonical production cutover verifies real public federation contracts aft
   assert.match(workflow, /The exact legacy WebFinger route changed after preflight/);
   assert.match(workflow, /Remove the exact stale WebFinger route from Flutter Pages Worker/);
   assert.match(workflow, /conflicting WebFinger route remains after deletion/);
-  assert.ok(workflow.indexOf("Remove the exact stale WebFinger route from Flutter Pages Worker") < workflow.indexOf("Deploy Worker gateway on canonical API, media, www and apex hostnames"));
+  const deployIndex = workflow.indexOf("Deploy Worker gateway on canonical API, media, www and apex hostnames");
+  const removeIndex = workflow.indexOf("Remove the exact stale WebFinger route from Flutter Pages Worker");
+  const verifyIndex = workflow.indexOf("Verify canonical API, Go CDN, Flutter web and apex identities");
+  assert.ok(deployIndex < removeIndex && removeIndex < verifyIndex);
 });
