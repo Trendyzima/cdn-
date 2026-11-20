@@ -647,8 +647,8 @@ test("canonical production cutover verifies real public federation contracts aft
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
   assert.match(workflow, /check_public_federation\(\) \{/);
   assert.match(workflow, /acct:crissbeat@testagram\.site/);
-  assert.equal([...workflow.matchAll(/acct:testagram-probe-2026@testagram\\.site/g)].length, 2);
-  assert.ok("testagram-probe-2026".length <= 30);
+  assert.equal([...workflow.matchAll(/acct:testagramprobe2026@testagram\\.site/g)].length, 2);
+  assert.match("testagramprobe2026", /^[A-Za-z0-9_]{3,30}$/);
   assert.match(workflow, /nodeinfo-discovery\.headers/);
   assert.match(workflow, /nodeinfo\.json/);
   assert.match(workflow, /actor\.json/);
