@@ -643,6 +643,77 @@ test("returns a retryable 503 when the origin fails and wake credentials are abs
 });
 
 
+test("API hostname is attached as a Worker Custom Domain for the guarded legacy-owner handoff", () => {
+  const config = readFileSync(new URL("./wrangler.toml", import.meta.url), "utf8");
+  const lines = config.split("\n");
+  const apiCustomDomain = lines.some((line, index) =>
+    line.trim() === 'pattern = "api.testagram.site"' &&
+    lines[index + 1]?.trim() === "custom_domain = true"
+  );
+  assert.ok(apiCustomDomain, "api.testagram.site must be a Wrangler Custom Domain");
+  assert.ok(!config.includes('pattern = "api.testagram.site/*"'));
+  const apiRoute = config.split("[[routes]]").find((route) => route.includes('pattern = "api.testagram.site"'));
+  assert.ok(apiRoute?.includes("custom_domain = true"));
+});
+test("API custom-domain transfer is separately approved, owner-pinned, verified and rolled back", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
+  assert.ok(workflow.includes("confirm_legacy_api_domain_transfer"));
+  assert.ok(workflow.includes("CONFIRM_LEGACY_API_DOMAIN_TRANSFER"));
+  assert.ok(workflow.includes("legacy_api_domain_id"));
+  assert.ok(workflow.includes("Detach only the explicitly approved legacy API custom domain"));
+  assert.ok(workflow.includes("Release only api.testagram.site DNS records for the custom-domain handoff"));
+  assert.ok(workflow.includes('.result.name == "api.testagram.site"'));
+  assert.ok(workflow.includes("Verify api.testagram.site is owned by the canonical gateway"));
+  assert.ok(workflow.includes("Ensure API hostname rolls forward only to the native gateway after a failed cutover"));
+  assert.ok(workflow.includes("Do not restore the legacy API Worker"));
+  assert.ok(!workflow.includes("legacy_api_domain_payload"));
+  assert.ok(workflow.includes('.result.hostname == "api.testagram.site"'));
+  assert.ok(workflow.includes('.result.service == "testagram-api"'));
+  assert.ok(workflow.includes('.result.service == "testagram-cdn"'));
+  assert.ok(workflow.includes('curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$domain_id"'));
+  assert.ok(workflow.includes('curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X PUT "$API/accounts/$CF_ACCOUNT_ID/workers/domains"'));
+  const preflightIndex = workflow.indexOf("Preflight Cloudflare zone and existing hostname ownership");
+  const detachIndex = workflow.indexOf("Detach only the explicitly approved legacy API custom domain");
+  const dnsReleaseIndex = workflow.indexOf("Release only api.testagram.site DNS records for the custom-domain handoff");
+  const deployIndex = workflow.indexOf("Deploy Worker gateway on canonical API, media, www and apex hostnames");
+  const ownerVerifyIndex = workflow.indexOf("Verify api.testagram.site is owned by the canonical gateway");
+  const gatewayVerifyIndex = workflow.indexOf("Verify canonical API, Go CDN, Flutter web and apex identities");
+  assert.ok(preflightIndex < detachIndex && detachIndex < dnsReleaseIndex && dnsReleaseIndex < deployIndex && deployIndex < ownerVerifyIndex && ownerVerifyIndex < gatewayVerifyIndex);
+});
+
+test("detached legacy API Worker cleanup is separately approved and native-gateway guarded", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/cleanup-detached-api-worker.yml", import.meta.url), "utf8");
+  assert.ok(workflow.includes("confirm_remove_detached_api_worker"));
+  assert.ok(workflow.includes("if: inputs.confirm_remove_detached_api_worker == true"));
+  assert.ok(workflow.includes('select(.hostname == "api.testagram.site" and .zone_id == $zone and .service == "testagram-cdn"'));
+  assert.ok(workflow.includes("https://api.testagram.site/healthz?cleanup_probe="));
+  assert.ok(workflow.includes("https://api.testagram.site/readyz?cleanup_probe="));
+  assert.ok(workflow.includes("https://api.testagram.site/metrics?cleanup_probe="));
+  assert.ok(workflow.includes("https://api.testagram.site/internal/tv/catalog?cleanup_probe="));
+  assert.ok(workflow.includes("x-testagram-service"));
+  assert.ok(workflow.includes("workers/scripts/testagram-api/schedules"));
+  assert.ok(workflow.includes("workers/scripts/testagram-api/settings"));
+  assert.ok(workflow.includes('select(.type == "service" or .type == "queue")'));
+  assert.ok(workflow.includes("workers/scripts/testagram-api/script-settings"));
+  assert.ok(workflow.includes("/pages/projects?per_page=100&page=1"));
+  assert.ok(workflow.includes("Pages project inventory is paginated"));
+  assert.ok(workflow.includes("Pages project $project still references testagram-api"));
+  assert.ok(workflow.includes('select(.script == "testagram-api")'));
+  assert.ok(workflow.includes('any(.type == "service" and .service == $target)'));
+  assert.ok(workflow.includes('any(.service == $target)'));
+  assert.ok(workflow.includes('DELETE'));
+  assert.ok(workflow.includes('/workers/scripts/testagram-api'));
+  assert.ok(workflow.includes("The legacy API Worker remains after deletion"));
+  assert.ok(!workflow.includes("/dns_records"));
+  const approvalIndex = workflow.indexOf("confirm_remove_detached_api_worker");
+  const ownerIndex = workflow.indexOf("api_domain_count=");
+  const healthIndex = workflow.indexOf("cleanup_probe=");
+  const routeIndex = workflow.indexOf("Worker route inventory is paginated");
+  const deleteIndex = workflow.indexOf('DELETE');
+  const verifyIndex = workflow.indexOf("The legacy API Worker remains after deletion");
+  assert.ok(approvalIndex < ownerIndex && ownerIndex < healthIndex && healthIndex < routeIndex && routeIndex < deleteIndex && deleteIndex < verifyIndex);
+});
+
 test("canonical production cutover verifies real public federation contracts after deployment", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
   assert.match(workflow, /check_public_federation\(\) \{/);
