@@ -915,6 +915,29 @@ jobs:
             echo "::error::The failed gateway API domain remains attached; refusing to attach the previous owner over it."
             exit 1
           }
+          # A Worker Custom Domain cannot be reattached over an existing CNAME.
+          # Remove only proxied A/AAAA/CNAME records for this exact hostname;
+          # the old custom-domain attach below recreates its managed DNS/TLS.
+          dns_records="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$dns_records" >/dev/null || {
+            echo "::error::Cannot enumerate exact API DNS records for rollback."
+            exit 1
+          }
+          dns_ids="$(jq -r '.result[]? | .id' <<<"$dns_records")"
+          while IFS= read -r record_id; do
+            [[ -n "$record_id" ]] || continue
+            record="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records/$record_id" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e --arg id "$record_id" '.success == true and .result.id == $id and .result.name == "api.testagram.site" and .result.proxied == true and (.result.type == "A" or .result.type == "AAAA" or .result.type == "CNAME")' <<<"$record" >/dev/null || {
+              echo "::error::Unexpected or non-proxied DNS record $record_id blocks safe API domain rollback."
+              exit 1
+            }
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/zones/$zone_id/dns_records/$record_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          done <<<"$dns_ids"
+          remaining_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and (.result | length == 0)' <<<"$remaining_dns" >/dev/null || {
+            echo "::error::API DNS records remain; refusing to attach the previous Worker domain over ambiguous DNS."
+            exit 1
+          }
           restore_body="$(jq -c '{hostname,service,enabled,previews_enabled,zone_id,zone_name}' <<<"$previous")"
           restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X PUT "$API/accounts/$CF_ACCOUNT_ID/workers/domains" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" -d "$restore_body")"
           jq -e '.success == true and .result.hostname == "api.testagram.site" and .result.service == "testagram-api" and .result.enabled == true' <<<"$restored" >/dev/null || {
