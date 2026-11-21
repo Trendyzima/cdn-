@@ -91,6 +91,14 @@ jobs:
             exit 1
           fi
 
+          api_ready_status="$(curl --silent --show-error --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' "https://api.testagram.site/readyz?cleanup_probe=$GITHUB_RUN_ID" || true)"
+          api_metrics_status="$(curl --silent --show-error --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' "https://api.testagram.site/metrics?cleanup_probe=$GITHUB_RUN_ID" || true)"
+          tv_catalog_status="$(curl --silent --show-error --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' "https://api.testagram.site/internal/tv/catalog?cleanup_probe=$GITHUB_RUN_ID" || true)"
+          if [[ "$api_ready_status" != "404" || "$api_metrics_status" != "404" || "$tv_catalog_status" != "401" ]]; then
+            echo "::error::Native API private readiness, metrics or protected-route boundary changed; refusing to remove the detached Worker."
+            exit 1
+          fi
+
           cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts?per_page=100&page=1" "$tmp/scripts.json"
           jq -e '(.result_info.total_pages // 1) <= 1' "$tmp/scripts.json" >/dev/null || {
             echo "::error::Worker script inventory is paginated; refusing an incomplete dependency check."
