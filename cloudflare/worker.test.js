@@ -652,7 +652,8 @@ test("API hostname is attached as a Worker Custom Domain for the guarded legacy-
   );
   assert.ok(apiCustomDomain, "api.testagram.site must be a Wrangler Custom Domain");
   assert.ok(!config.includes('pattern = "api.testagram.site/*"'));
-  assert.match(config, /API_ORIGIN/);
+  const apiRoute = config.split("[[routes]]").find((route) => route.includes('pattern = "api.testagram.site"'));
+  assert.ok(apiRoute?.includes("custom_domain = true"));
 });
 test("API custom-domain transfer is separately approved, owner-pinned, verified and rolled back", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
