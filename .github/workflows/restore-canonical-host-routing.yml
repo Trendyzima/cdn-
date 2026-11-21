@@ -451,7 +451,7 @@ jobs:
             echo "::error::www.testagram.site must have an existing proxied A/AAAA/CNAME record for its exact Worker Route. No DNS records will be changed."
             jq -c '.errors // .result' <<<"$www_dns"; exit 1;
           }
-          echo "Cloudflare zone, Pages ownership, Worker routes/custom domains and proxied apex/API/www DNS passed preflight. A separately approved API transfer may replace only api.testagram.site DNS records; verified R2 media binding, stale WebFinger route and verified Pages associations are handled by exact-owner checks and rollback."
+          echo "Cloudflare zone, Pages ownership, Worker routes/custom domains, apex/www DNS and exact API custom-domain ownership passed preflight. A separately approved API transfer replaces only api.testagram.site DNS records; verified R2 media binding, stale WebFinger route and Pages associations remain guarded by exact-owner checks and rollback."
 
       - name: Test canonical gateway contract
         working-directory: cloudflare
