@@ -534,6 +534,49 @@ jobs:
           }
           echo "Verified the exact legacy API Worker custom domain is detached; Wrangler will attach the canonical gateway domain next."
 
+      - name: Release only api.testagram.site DNS records for the custom-domain handoff
+        id: release_api_dns
+        if: steps.preflight.outputs.legacy_api_domain_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zone_id="${{ steps.preflight.outputs.zone_id }}"
+          records="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$records" >/dev/null || {
+            echo "::error::Cannot enumerate all api.testagram.site DNS records; refusing custom-domain transfer."
+            exit 1
+          }
+          ids="$(jq -r '.result[]? | .id' <<<"$records")"
+          while IFS= read -r record_id; do
+            [[ -n "$record_id" ]] || continue
+            record="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records/$record_id" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e --arg id "$record_id" '.success == true and .result.id == $id and .result.name == "api.testagram.site" and .result.proxied == true and (.result.type == "A" or .result.type == "AAAA" or .result.type == "CNAME")' <<<"$record" >/dev/null || {
+              echo "::error::DNS record $record_id changed or is not an exact proxied API hostname record; refusing to delete it."
+              jq -c '{errors,result}' <<<"$record"
+              exit 1
+            }
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/zones/$zone_id/dns_records/$record_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          done <<<"$ids"
+          released=false
+          for attempt in $(seq 1 30); do
+            remaining="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$remaining" >/dev/null || {
+              echo "::error::Cannot verify API DNS record release."
+              exit 1
+            }
+            if jq -e '.result | length == 0' <<<"$remaining" >/dev/null; then
+              released=true
+              break
+            fi
+            sleep 2
+          done
+          [[ "$released" == "true" ]] || {
+            echo "::error::api.testagram.site DNS records remain after exact release; refusing custom-domain deployment."
+            exit 1
+          }
+          echo "Verified only the exact api.testagram.site DNS records were released; Wrangler will create the canonical Worker Custom Domain and its DNS/TLS binding."
+
       - name: Store the InstaBox recovery credential as a Cloudflare Worker secret
         shell: bash
         env:
