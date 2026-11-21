@@ -687,6 +687,9 @@ test("detached legacy API Worker cleanup is separately approved and native-gatew
   assert.ok(workflow.includes("if: inputs.confirm_remove_detached_api_worker == true"));
   assert.ok(workflow.includes('select(.hostname == "api.testagram.site" and .zone_id == $zone and .service == "testagram-cdn"'));
   assert.ok(workflow.includes("https://api.testagram.site/healthz?cleanup_probe="));
+  assert.ok(workflow.includes("https://api.testagram.site/readyz?cleanup_probe="));
+  assert.ok(workflow.includes("https://api.testagram.site/metrics?cleanup_probe="));
+  assert.ok(workflow.includes("https://api.testagram.site/internal/tv/catalog?cleanup_probe="));
   assert.ok(workflow.includes("x-testagram-service"));
   assert.ok(workflow.includes("workers/scripts/testagram-api/schedules"));
   assert.ok(workflow.includes("workers/scripts/testagram-api/settings"));
