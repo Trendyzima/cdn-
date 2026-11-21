@@ -13,6 +13,11 @@ on:
         required: true
         type: boolean
         default: false
+      confirm_legacy_webfinger_route_transfer:
+        description: "Separately authorize removing only the exact testagram.site/.well-known/webfinger* route owned by testagram-web after the canonical apex gateway is deployed"
+        required: true
+        type: boolean
+        default: false
       # InstaBox publishes deterministic port hostnames for the selected machine.
       # Derive all three origins from machine_id; never ask an operator to
       # paste a hostname or accidentally place the machine ID in an origin field.
@@ -43,6 +48,7 @@ jobs:
       INSTABOX_API_KEY: ${{ secrets.TESTAGRAM_DB_API || secrets.INSTABOX_API_KEY }}
       CONFIRM_CANONICAL_HOST_ROUTING: ${{ inputs.confirm_canonical_host_routing }}
       CONFIRM_LEGACY_API_DOMAIN_TRANSFER: ${{ inputs.confirm_legacy_api_domain_transfer }}
+      CONFIRM_LEGACY_WEBFINGER_ROUTE_TRANSFER: ${{ inputs.confirm_legacy_webfinger_route_transfer }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -367,8 +373,17 @@ jobs:
               echo "::error::The conflicting WebFinger route belongs to unexpected Worker $legacy_script; refusing to delete it."
               exit 1
             }
+            [[ "$CONFIRM_LEGACY_WEBFINGER_ROUTE_TRANSFER" == "true" ]] || {
+              echo "::error::The exact WebFinger route is still owned by testagram-web. Set confirm_legacy_webfinger_route_transfer=true as a separate explicit approval after staging acceptance."
+              exit 1
+            }
             legacy_webfinger_route_id="$legacy_route_id"
-            echo "Captured exact stale WebFinger route $legacy_route_id owned by testagram-web for guarded removal."
+            echo "Captured exact stale WebFinger route $legacy_route_id owned by testagram-web for separately approved removal."
+          else
+            [[ "$CONFIRM_LEGACY_WEBFINGER_ROUTE_TRANSFER" != "true" ]] || {
+              echo "::error::WebFinger route transfer was explicitly approved but the exact legacy route is absent; refusing stale approval."
+              exit 1
+            }
           fi
           echo "legacy_webfinger_route_id=$legacy_webfinger_route_id" >> "$GITHUB_OUTPUT"
 
@@ -824,6 +839,48 @@ jobs:
             exit 1
           }
           echo "Restored and verified www.testagram.site on its previous Flutter Pages association. The apex and API/media routes were not changed."
+
+      - name: Restore the exact legacy WebFinger route if apex verification fails
+        if: failure() && steps.preflight.outputs.legacy_webfinger_route_id != '' && steps.verify_gateway.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zone_id="${{ steps.preflight.outputs.zone_id }}"
+          pattern="testagram.site/.well-known/webfinger*"
+          routes="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$routes" >/dev/null || {
+            echo "::error::Cannot enumerate Worker routes for WebFinger rollback."
+            exit 1
+          }
+          existing="$(jq -c --arg pattern "$pattern" '[.result[]? | select(.pattern==$pattern)]' <<<"$routes")"
+          count="$(jq 'length' <<<"$existing")"
+          [[ "$count" -le 1 ]] || {
+            echo "::error::Multiple WebFinger routes exist during rollback; refusing ambiguous mutation."
+            jq -c '.' <<<"$existing"
+            exit 1
+          }
+          if [[ "$count" == "1" ]]; then
+            jq -e '.[0].script == "testagram-web"' <<<"$existing" >/dev/null || {
+              echo "::error::An unexpected Worker owns the WebFinger route during rollback; refusing to replace it."
+              jq -c '.' <<<"$existing"
+              exit 1
+            }
+            echo "The exact legacy WebFinger route is already restored."
+            exit 0
+          fi
+          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X POST "$API/zones/$zone_id/workers/routes" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" -d '{"pattern":"testagram.site/.well-known/webfinger*","script":"testagram-web"}')"
+          jq -e '.success == true and .result.pattern == "testagram.site/.well-known/webfinger*" and .result.script == "testagram-web"' <<<"$restored" >/dev/null || {
+            echo "::error::Could not restore the exact pre-cutover WebFinger route."
+            jq -c '{errors,messages,result}' <<<"$restored"
+            exit 1
+          }
+          verified="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/workers/routes?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ([.result[]? | select(.pattern=="testagram.site/.well-known/webfinger*" and .script=="testagram-web")] | length == 1)' <<<"$verified" >/dev/null || {
+            echo "::error::WebFinger route rollback was accepted but could not be verified."
+            exit 1
+          }
+          echo "Restored and verified the exact legacy WebFinger-to-testagram-web route after failed apex verification."
 
       - name: Restore the previous R2 hostname owner if Go CDN cutover fails
         if: failure() && steps.preflight.outputs.r2_bucket != '' && steps.detach_r2_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
