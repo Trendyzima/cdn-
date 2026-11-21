@@ -85,11 +85,11 @@ jobs:
             echo "::error::The public API response does not identify the native Testagram API service."
             exit 1
           }
-          [[ "$api_status" == "200" ]] && jq -e '.ok == true and .service == "testagram-api"' "$tmp/api-health.json" >/dev/null || {
+          if [[ "$api_status" != "200" ]] || ! jq -e '.ok == true and .service == "testagram-api"' "$tmp/api-health.json" >/dev/null; then
             echo "::error::The native API gateway health check is not healthy; refusing to remove the detached Worker."
             cat "$tmp/api-health.json"
             exit 1
-          }
+          fi
 
           cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts?per_page=100&page=1" "$tmp/scripts.json"
           jq -e '(.result_info.total_pages // 1) <= 1' "$tmp/scripts.json" >/dev/null || {
