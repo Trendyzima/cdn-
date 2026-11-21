@@ -645,11 +645,10 @@ test("returns a retryable 503 when the origin fails and wake credentials are abs
 
 test("API hostname is attached as a Worker Custom Domain for the guarded legacy-owner handoff", () => {
   const config = readFileSync(new URL("./wrangler.toml", import.meta.url), "utf8");
-  assert.ok(config.includes(`pattern = "api.testagram.site"\ncustom_domain = true`));
+  assert.match(config, /pattern = "api\\.testagram\\.site"\\s+custom_domain = true/);
   assert.ok(!config.includes('pattern = "api.testagram.site/*"'));
   assert.match(config, /API_ORIGIN/);
 });
-
 test("API custom-domain transfer is separately approved, owner-pinned, verified and rolled back", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
   assert.ok(workflow.includes("confirm_legacy_api_domain_transfer"));
