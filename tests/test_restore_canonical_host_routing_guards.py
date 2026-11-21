@@ -39,8 +39,7 @@ class CanonicalHostRoutingGuardsTest(unittest.TestCase):
         self.assertIn("steps.verify_gateway.outcome != 'success'", WORKFLOW)
         self.assertIn('.[0].script == "testagram-web"', WORKFLOW)
         self.assertIn('POST "$API/zones/$zone_id/workers/routes"', WORKFLOW)
-        self.assertIn('".pattern":"testagram.site/.well-known/webfinger*"', WORKFLOW)
-        self.assertIn('".script":"testagram-web"', WORKFLOW)
+        self.assertIn('{"pattern":"testagram.site/.well-known/webfinger*","script":"testagram-web"}', WORKFLOW)
         self.assertIn("Restored and verified the exact legacy WebFinger-to-testagram-web route", WORKFLOW)
 
     def test_workflow_does_not_delete_other_routes_or_dns(self):
