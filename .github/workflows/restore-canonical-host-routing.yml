@@ -812,3 +812,71 @@ jobs:
             exit 1;
           }
           echo "Previous R2 hostname ownership restored and verified; no bucket objects were changed."
+      - name: Restore the previous API Worker custom-domain owner if gateway cutover fails
+        if: failure() && steps.preflight.outputs.legacy_api_domain_payload != '' && steps.detach_legacy_api_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          zone_id="${{ steps.preflight.outputs.zone_id }}"
+          previous_domain="$(echo '${{ steps.preflight.outputs.legacy_api_domain_payload }}' | base64 -d)"
+          domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$domains" >/dev/null || {
+            echo "::error::Cannot enumerate Worker domains for API rollback; manual ownership recovery is required."
+            exit 1
+          }
+          current="$(jq -c --arg zone "$zone_id" '[.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone)]' <<<"$domains")"
+          count="$(jq 'length' <<<"$current")"
+          [[ "$count" -le 1 ]] || {
+            echo "::error::Multiple API custom-domain owners appeared during rollback; refusing ambiguous mutation."
+            jq -c '.' <<<"$current"; exit 1
+          }
+          if [[ "$count" == "1" ]]; then
+            owner="$(jq -c '.[0]' <<<"$current")"
+            service="$(jq -r '.service // empty' <<<"$owner")"
+            if [[ "$service" == "testagram-api" ]]; then
+              jq -e '.enabled == true' <<<"$owner" >/dev/null || {
+                echo "::error::The previous API Worker domain exists but is disabled; refusing to claim rollback success."
+                exit 1
+              }
+              echo "The previous API Worker custom domain is already restored."
+              exit 0
+            fi
+            [[ "$service" == "testagram-cdn" ]] || {
+              echo "::error::Unexpected Worker $service owns api.testagram.site during rollback; refusing to detach it."
+              exit 1
+            }
+            new_domain_id="$(jq -r '.id // empty' <<<"$owner")"
+            [[ -n "$new_domain_id" ]] || {
+              echo "::error::The canonical gateway API domain has no ID; refusing unsafe rollback."
+              exit 1
+            }
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$new_domain_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          fi
+          detached=false
+          for attempt in $(seq 1 30); do
+            state="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+            if ! jq -e --arg zone "$zone_id" '.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone)' <<<"$state" >/dev/null; then
+              detached=true
+              break
+            fi
+            sleep 2
+          done
+          [[ "$detached" == "true" ]] || {
+            echo "::error::The failed gateway API domain remains attached; refusing to attach the previous owner over it."
+            exit 1
+          }
+          restore_body="$(jq -c '{hostname,service,enabled,previews_enabled,zone_id,zone_name}' <<<"$previous")"
+          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X PUT "$API/accounts/$CF_ACCOUNT_ID/workers/domains" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" -d "$restore_body")"
+          jq -e '.success == true and .result.hostname == "api.testagram.site" and .result.service == "testagram-api" and .result.enabled == true' <<<"$restored" >/dev/null || {
+            echo "::error::Automatic API custom-domain rollback failed. Reattach api.testagram.site to testagram-api using the captured previous domain settings."
+            jq -c '{errors,messages,result}' <<<"$restored"
+            exit 1
+          }
+          verified="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e --arg zone "$zone_id" '[.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone and .service=="testagram-api" and .enabled==true)] | length == 1' <<<"$verified" >/dev/null || {
+            echo "::error::API rollback was accepted but the previous Worker domain could not be verified."
+            exit 1
+          }
+          echo "Previous api.testagram.site custom-domain owner restored and verified."
+
