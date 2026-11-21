@@ -646,7 +646,7 @@ test("returns a retryable 503 when the origin fails and wake credentials are abs
 test("API hostname is attached as a Worker Custom Domain for the guarded legacy-owner handoff", () => {
   const config = readFileSync(new URL("./wrangler.toml", import.meta.url), "utf8");
   assert.match(config, /pattern = "api\\.testagram\\.site"\\s+custom_domain = true/);
-  assert.doesNotMatch(config, /pattern = "api\\.testagram\\.site\\/\\*"/);
+  assert.ok(!config.includes('pattern = "api.testagram.site/*"'));
   assert.match(config, /API_ORIGIN/);
 });
 
