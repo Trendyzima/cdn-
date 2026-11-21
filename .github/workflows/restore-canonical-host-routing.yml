@@ -431,13 +431,20 @@ jobs:
             jq -c '.errors // .result' <<<"$apex_dns"; exit 1;
           }
           api_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
-          jq -e '.success == true and (.result | length > 0 and all(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
-            echo "::error::api.testagram.site must have only proxied A/AAAA/CNAME records before the guarded Worker custom-domain handoff."
-            jq -c '.errors // .result' <<<"$api_dns"; exit 1;
+          jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$api_dns" >/dev/null || {
+            echo "::error::Cannot enumerate all api.testagram.site DNS records."
+            jq -c '.errors // []' <<<"$api_dns"; exit 1;
           }
-          if [[ -z "$api_domain_owner_service" ]] && jq -e '.result[]? | select(.type == "CNAME")' <<<"$api_dns" >/dev/null; then
-            echo "::error::api.testagram.site has a CNAME but no verified Worker custom-domain owner. Cloudflare cannot create a new Worker Custom Domain over an existing CNAME; review the exact DNS owner manually."
-            exit 1
+          if [[ -n "$api_domain_owner_service" ]]; then
+            jq -e '.result | length > 0 and all(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME"))' <<<"$api_dns" >/dev/null || {
+              echo "::error::The verified API Worker custom domain has no valid proxied DNS record set; refusing transfer."
+              jq -c '.errors // .result' <<<"$api_dns"; exit 1;
+            }
+          else
+            jq -e '.result | length == 0' <<<"$api_dns" >/dev/null || {
+              echo "::error::api.testagram.site has DNS records but no verified Worker custom-domain owner. Review the DNS owner manually before creating a new Custom Domain."
+              jq -c '.result' <<<"$api_dns"; exit 1;
+            }
           fi
           www_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=www.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$www_dns" >/dev/null || {
