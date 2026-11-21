@@ -150,9 +150,7 @@ The former `deploy-private-r2-worker.yml` workflow is validation-only now. It
 cannot deploy a Worker without verified API/CDN origins. The canonical host
 gateway workflow above is the sole production Worker deployment path.
 
-Backend is the authority for identity, media ownership, visibility and
-viewer authorization. Appwrite is used for identity/session verification;
-Backend remains the sole product authorization authority. Data Centre owns storage
+Backend is the sole authority for Testagram-native identity, sessions, media ownership, visibility and viewer authorization. Private media uses a short-lived, object/viewer-bound assertion issued by Backend and verified at the trusted Backend origin. The CDN never authenticates users against an external identity provider. Data Centre owns storage
 placement, replication, repair and deletion. The CDN is not a product API or
 authorization authority.
 
