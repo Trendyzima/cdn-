@@ -693,6 +693,7 @@ test("detached legacy API Worker cleanup is separately approved and native-gatew
   assert.ok(workflow.includes("x-testagram-service"));
   assert.ok(workflow.includes("workers/scripts/testagram-api/schedules"));
   assert.ok(workflow.includes("workers/scripts/testagram-api/settings"));
+  assert.ok(workflow.includes('select(.type == "service" or .type == "queue")'));
   assert.ok(workflow.includes("workers/scripts/testagram-api/script-settings"));
   assert.ok(workflow.includes("/pages/projects?per_page=100&page=1"));
   assert.ok(workflow.includes("Pages project inventory is paginated"));
