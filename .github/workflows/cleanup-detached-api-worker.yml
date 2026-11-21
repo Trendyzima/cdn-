@@ -144,8 +144,8 @@ jobs:
           }
 
           cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-api/settings" "$tmp/target-settings.json"
-          jq -e '(.result.bindings // [] | map(select(.type == "service")) | length) == 0' "$tmp/target-settings.json" >/dev/null || {
-            echo "::error::testagram-api still has service bindings; refusing deletion."
+          jq -e '(.result.bindings // [] | map(select(.type == "service" or .type == "queue")) | length) == 0' "$tmp/target-settings.json" >/dev/null || {
+            echo "::error::testagram-api still has service or queue bindings; refusing deletion."
             exit 1
           }
 
