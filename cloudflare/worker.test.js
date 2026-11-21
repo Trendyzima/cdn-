@@ -681,6 +681,32 @@ test("API custom-domain transfer is separately approved, owner-pinned, verified 
   assert.ok(preflightIndex < detachIndex && detachIndex < dnsReleaseIndex && dnsReleaseIndex < deployIndex && deployIndex < ownerVerifyIndex && ownerVerifyIndex < gatewayVerifyIndex);
 });
 
+test("detached legacy API Worker cleanup is separately approved and native-gateway guarded", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/cleanup-detached-api-worker.yml", import.meta.url), "utf8");
+  assert.ok(workflow.includes("confirm_remove_detached_api_worker"));
+  assert.ok(workflow.includes("if: inputs.confirm_remove_detached_api_worker == true"));
+  assert.ok(workflow.includes('select(.hostname == "api.testagram.site" and .zone_id == $zone and .service == "testagram-cdn"'));
+  assert.ok(workflow.includes("https://api.testagram.site/healthz?cleanup_probe="));
+  assert.ok(workflow.includes("x-testagram-service"));
+  assert.ok(workflow.includes("workers/scripts/testagram-api/schedules"));
+  assert.ok(workflow.includes("workers/scripts/testagram-api/settings"));
+  assert.ok(workflow.includes("workers/scripts/testagram-api/script-settings"));
+  assert.ok(workflow.includes('select(.script == "testagram-api")'));
+  assert.ok(workflow.includes('select(.type == "service" and .service == $target)'));
+  assert.ok(workflow.includes('select(.service == $target)'));
+  assert.ok(workflow.includes('DELETE'));
+  assert.ok(workflow.includes('/workers/scripts/testagram-api'));
+  assert.ok(workflow.includes("The legacy API Worker remains after deletion"));
+  assert.ok(!workflow.includes("/dns_records"));
+  const approvalIndex = workflow.indexOf("confirm_remove_detached_api_worker");
+  const ownerIndex = workflow.indexOf("api_domain_count=");
+  const healthIndex = workflow.indexOf("cleanup_probe=");
+  const routeIndex = workflow.indexOf("Worker route inventory is paginated");
+  const deleteIndex = workflow.indexOf('DELETE');
+  const verifyIndex = workflow.indexOf("The legacy API Worker remains after deletion");
+  assert.ok(approvalIndex < ownerIndex && ownerIndex < healthIndex && healthIndex < routeIndex && routeIndex < deleteIndex && deleteIndex < verifyIndex);
+});
+
 test("canonical production cutover verifies real public federation contracts after deployment", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
   assert.match(workflow, /check_public_federation\(\) \{/);
