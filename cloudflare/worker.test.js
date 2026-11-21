@@ -650,6 +650,28 @@ test("API hostname is attached as a Worker Custom Domain for the guarded legacy-
   assert.match(config, /API_ORIGIN/);
 });
 
+test("API custom-domain transfer is separately approved, owner-pinned, verified and rolled back", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
+  assert.ok(workflow.includes("confirm_legacy_api_domain_transfer"));
+  assert.ok(workflow.includes("CONFIRM_LEGACY_API_DOMAIN_TRANSFER"));
+  assert.ok(workflow.includes("legacy_api_domain_id"));
+  assert.ok(workflow.includes("legacy_api_domain_payload"));
+  assert.ok(workflow.includes("Detach only the explicitly approved legacy API custom domain"));
+  assert.ok(workflow.includes("Verify api.testagram.site is owned by the canonical gateway"));
+  assert.ok(workflow.includes("Restore the previous API Worker custom-domain owner if gateway cutover fails"));
+  assert.ok(workflow.includes('".result.hostname == "api.testagram.site"'));
+  assert.ok(workflow.includes('.result.service == "testagram-api"'));
+  assert.ok(workflow.includes('.result.service == "testagram-cdn"'));
+  assert.ok(workflow.includes('curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$domain_id"'));
+  assert.ok(workflow.includes('curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X PUT "$API/accounts/$CF_ACCOUNT_ID/workers/domains"'));
+  const preflightIndex = workflow.indexOf("Preflight Cloudflare zone and existing hostname ownership");
+  const detachIndex = workflow.indexOf("Detach only the explicitly approved legacy API custom domain");
+  const deployIndex = workflow.indexOf("Deploy Worker gateway on canonical API, media, www and apex hostnames");
+  const ownerVerifyIndex = workflow.indexOf("Verify api.testagram.site is owned by the canonical gateway");
+  const gatewayVerifyIndex = workflow.indexOf("Verify canonical API, Go CDN, Flutter web and apex identities");
+  assert.ok(preflightIndex < detachIndex && detachIndex < deployIndex && deployIndex < ownerVerifyIndex && ownerVerifyIndex < gatewayVerifyIndex);
+});
+
 test("canonical production cutover verifies real public federation contracts after deployment", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
   assert.match(workflow, /check_public_federation\(\) \{/);
