@@ -253,6 +253,7 @@ jobs:
           # closed before any production mutation.
           legacy_api_domain_id=""
           legacy_api_domain_payload=""
+          api_domain_owner_service=""
           api_domains="$(jq -c --arg zone "$zone_id" '[.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone)]' <<<"$domains")"
           api_domain_count="$(jq 'length' <<<"$api_domains")"
           [[ "$api_domain_count" -le 1 ]] || {
@@ -262,6 +263,7 @@ jobs:
           if [[ "$api_domain_count" == "1" ]]; then
             api_domain="$(jq -c '.[0]' <<<"$api_domains")"
             api_service="$(jq -r '.service // empty' <<<"$api_domain")"
+            api_domain_owner_service="$api_service"
             api_environment="$(jq -r '.environment // "production"' <<<"$api_domain")"
             api_domain_id="$(jq -r '.id // empty' <<<"$api_domain")"
             if [[ "$api_service" == "testagram-api" && "$api_environment" == "production" ]]; then
@@ -429,10 +431,14 @@ jobs:
             jq -c '.errors // .result' <<<"$apex_dns"; exit 1;
           }
           api_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
-          jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
-            echo "::error::api.testagram.site must have an existing proxied A/AAAA/CNAME record for its Worker Route. No DNS records will be changed."
+          jq -e '.success == true and (.result | length > 0 and all(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$api_dns" >/dev/null || {
+            echo "::error::api.testagram.site must have only proxied A/AAAA/CNAME records before the guarded Worker custom-domain handoff."
             jq -c '.errors // .result' <<<"$api_dns"; exit 1;
           }
+          if [[ -z "$api_domain_owner_service" ]] && jq -e '.result[]? | select(.type == "CNAME")' <<<"$api_dns" >/dev/null; then
+            echo "::error::api.testagram.site has a CNAME but no verified Worker custom-domain owner. Cloudflare cannot create a new Worker Custom Domain over an existing CNAME; review the exact DNS owner manually."
+            exit 1
+          fi
           www_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=www.testagram.site&per_page=100" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and (.result | any(.[]; .proxied == true and (.type == "A" or .type == "AAAA" or .type == "CNAME")))' <<<"$www_dns" >/dev/null || {
             echo "::error::www.testagram.site must have an existing proxied A/AAAA/CNAME record for its exact Worker Route. No DNS records will be changed."
