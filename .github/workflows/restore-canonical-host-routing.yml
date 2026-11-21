@@ -252,7 +252,6 @@ jobs:
           # ambiguity, unexpected Worker, inactive binding or missing ID fails
           # closed before any production mutation.
           legacy_api_domain_id=""
-          legacy_api_domain_payload=""
           api_domain_owner_service=""
           api_domains="$(jq -c --arg zone "$zone_id" '[.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone)]' <<<"$domains")"
           api_domain_count="$(jq 'length' <<<"$api_domains")"
@@ -280,7 +279,6 @@ jobs:
                 exit 1;
               }
               legacy_api_domain_id="$api_domain_id"
-              legacy_api_domain_payload="$(jq -c '{hostname,service,enabled,previews_enabled,zone_id,zone_name:(.zone_name // "testagram.site")}' <<<"$api_domain" | base64 -w0)"
               echo "Captured exact production API custom-domain owner $legacy_api_domain_id for a guarded transfer with rollback."
             elif [[ "$api_service" == "testagram-cdn" && "$api_environment" == "production" ]]; then
               jq -e '.enabled == true' <<<"$api_domain" >/dev/null || {
@@ -300,7 +298,6 @@ jobs:
             echo "No Worker custom-domain owner exists for api.testagram.site; Wrangler will create the canonical binding."
           fi
           echo "legacy_api_domain_id=$legacy_api_domain_id" >> "$GITHUB_OUTPUT"
-          echo "legacy_api_domain_payload=$legacy_api_domain_payload" >> "$GITHUB_OUTPUT"
 
           pages_status="$(curl -sS --connect-timeout 5 --max-time 15 -o /tmp/apex-pages-domain.json -w '%{http_code}' "$API/accounts/$CF_ACCOUNT_ID/pages/projects/testagram-flutter-web/domains/testagram.site" -H "Authorization: Bearer $CF_API_TOKEN" || true)"
           pages_attached=false
@@ -868,46 +865,41 @@ jobs:
             exit 1;
           }
           echo "Previous R2 hostname ownership restored and verified; no bucket objects were changed."
-      - name: Restore the previous API Worker custom-domain owner if gateway cutover fails
-        if: failure() && steps.preflight.outputs.legacy_api_domain_payload != '' && steps.detach_legacy_api_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
+      - name: Ensure API hostname rolls forward only to the native gateway after a failed cutover
+        if: failure() && steps.preflight.outputs.legacy_api_domain_id != '' && steps.detach_legacy_api_domain.outcome != 'skipped' && steps.verify_gateway.outcome != 'success'
         shell: bash
         run: |
           set -euo pipefail
           API=https://api.cloudflare.com/client/v4
           zone_id="${{ steps.preflight.outputs.zone_id }}"
-          previous_domain="$(echo '${{ steps.preflight.outputs.legacy_api_domain_payload }}' | base64 -d)"
+          legacy_domain_id="${{ steps.preflight.outputs.legacy_api_domain_id }}"
           domains="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$domains" >/dev/null || {
-            echo "::error::Cannot enumerate Worker domains for API rollback; manual ownership recovery is required."
+            echo "::error::Cannot enumerate Worker domains for native-only API recovery."
             exit 1
           }
           current="$(jq -c --arg zone "$zone_id" '[.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone)]' <<<"$domains")"
           count="$(jq 'length' <<<"$current")"
           [[ "$count" -le 1 ]] || {
-            echo "::error::Multiple API custom-domain owners appeared during rollback; refusing ambiguous mutation."
+            echo "::error::Multiple API custom-domain owners appeared during recovery; refusing ambiguous mutation."
             jq -c '.' <<<"$current"; exit 1
           }
           if [[ "$count" == "1" ]]; then
             owner="$(jq -c '.[0]' <<<"$current")"
             service="$(jq -r '.service // empty' <<<"$owner")"
-            if [[ "$service" == "testagram-api" ]]; then
-              jq -e '.enabled == true' <<<"$owner" >/dev/null || {
-                echo "::error::The previous API Worker domain exists but is disabled; refusing to claim rollback success."
+            if [[ "$service" == "testagram-cdn" ]]; then
+              jq -e '.enabled == true and ((.previews_enabled // false) == false)' <<<"$owner" >/dev/null || {
+                echo "::error::The native gateway API domain is present but not enabled for production."
                 exit 1
               }
-              echo "The previous API Worker custom domain is already restored."
+              echo "The API hostname is already owned by the native testagram-cdn gateway; no legacy Worker will be restored."
               exit 0
             fi
-            [[ "$service" == "testagram-cdn" ]] || {
-              echo "::error::Unexpected Worker $service owns api.testagram.site during rollback; refusing to detach it."
+            [[ "$service" == "testagram-api" && "$(jq -r '.id // empty' <<<"$owner")" == "$legacy_domain_id" ]] || {
+              echo "::error::Unexpected Worker $service owns api.testagram.site during recovery; refusing to detach it."
               exit 1
             }
-            new_domain_id="$(jq -r '.id // empty' <<<"$owner")"
-            [[ -n "$new_domain_id" ]] || {
-              echo "::error::The canonical gateway API domain has no ID; refusing unsafe rollback."
-              exit 1
-            }
-            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$new_domain_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+            curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$legacy_domain_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
           fi
           detached=false
           for attempt in $(seq 1 30); do
@@ -919,15 +911,15 @@ jobs:
             sleep 2
           done
           [[ "$detached" == "true" ]] || {
-            echo "::error::The failed gateway API domain remains attached; refusing to attach the previous owner over it."
+            echo "::error::The legacy API Worker domain remains attached; refusing to attach the native gateway over it."
             exit 1
           }
-          # A Worker Custom Domain cannot be reattached over an existing CNAME.
-          # Remove only proxied A/AAAA/CNAME records for this exact hostname;
-          # the old custom-domain attach below recreates its managed DNS/TLS.
+
+          # Clear only exact API-host records so the native Worker Custom
+          # Domain can be attached. No other hostname or DNS record is touched.
           dns_records="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$dns_records" >/dev/null || {
-            echo "::error::Cannot enumerate exact API DNS records for rollback."
+            echo "::error::Cannot enumerate exact API DNS records during native-only recovery."
             exit 1
           }
           dns_ids="$(jq -r '.result[]? | .id' <<<"$dns_records")"
@@ -935,27 +927,26 @@ jobs:
             [[ -n "$record_id" ]] || continue
             record="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records/$record_id" -H "Authorization: Bearer $CF_API_TOKEN")"
             jq -e --arg id "$record_id" '.success == true and .result.id == $id and .result.name == "api.testagram.site" and .result.proxied == true and (.result.type == "A" or .result.type == "AAAA" or .result.type == "CNAME")' <<<"$record" >/dev/null || {
-              echo "::error::Unexpected or non-proxied DNS record $record_id blocks safe API domain rollback."
+              echo "::error::Unexpected or non-proxied DNS record $record_id blocks native-only API recovery."
               exit 1
             }
             curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/zones/$zone_id/dns_records/$record_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
           done <<<"$dns_ids"
           remaining_dns="$(curl --retry 2 --retry-all-errors -fsS "$API/zones/$zone_id/dns_records?name=api.testagram.site&per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
           jq -e '.success == true and (.result | length == 0)' <<<"$remaining_dns" >/dev/null || {
-            echo "::error::API DNS records remain; refusing to attach the previous Worker domain over ambiguous DNS."
+            echo "::error::API DNS records remain; refusing to attach the native gateway over ambiguous DNS."
             exit 1
           }
-          restore_body="$(jq -c '{hostname,service,enabled,previews_enabled,zone_id,zone_name}' <<<"$previous")"
-          restored="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X PUT "$API/accounts/$CF_ACCOUNT_ID/workers/domains" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" -d "$restore_body")"
-          jq -e '.success == true and .result.hostname == "api.testagram.site" and .result.service == "testagram-api" and .result.enabled == true' <<<"$restored" >/dev/null || {
-            echo "::error::Automatic API custom-domain rollback failed. Reattach api.testagram.site to testagram-api using the captured previous domain settings."
-            jq -c '{errors,messages,result}' <<<"$restored"
+
+          native_domain="$(curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X PUT "$API/accounts/$CF_ACCOUNT_ID/workers/domains" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" -d "{\"hostname\":\"api.testagram.site\",\"service\":\"testagram-cdn\",\"enabled\":true,\"previews_enabled\":false,\"zone_id\":\"$zone_id\",\"zone_name\":\"testagram.site\"}")"
+          jq -e '.success == true and .result.hostname == "api.testagram.site" and .result.service == "testagram-cdn" and .result.enabled == true' <<<"$native_domain" >/dev/null || {
+            echo "::error::Could not attach the native gateway after the failed cutover. Do not restore the legacy API Worker; recover api.testagram.site only to testagram-cdn."
+            jq -c '{errors,messages,result}' <<<"$native_domain"
             exit 1
           }
           verified="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
-          jq -e --arg zone "$zone_id" '[.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone and .service=="testagram-api" and .enabled==true)] | length == 1' <<<"$verified" >/dev/null || {
-            echo "::error::API rollback was accepted but the previous Worker domain could not be verified."
+          jq -e --arg zone "$zone_id" '[.result[]? | select(.hostname=="api.testagram.site" and .zone_id==$zone and .service=="testagram-cdn" and .enabled==true)] | length == 1' <<<"$verified" >/dev/null || {
+            echo "::error::Native gateway recovery was accepted but could not be verified."
             exit 1
           }
-          echo "Previous api.testagram.site custom-domain owner restored and verified."
-
+          echo "Recovered api.testagram.site to the native testagram-cdn gateway only; the legacy API Worker was not restored."
