@@ -692,8 +692,8 @@ test("detached legacy API Worker cleanup is separately approved and native-gatew
   assert.ok(workflow.includes("workers/scripts/testagram-api/settings"));
   assert.ok(workflow.includes("workers/scripts/testagram-api/script-settings"));
   assert.ok(workflow.includes('select(.script == "testagram-api")'));
-  assert.ok(workflow.includes('select(.type == "service" and .service == $target)'));
-  assert.ok(workflow.includes('select(.service == $target)'));
+  assert.ok(workflow.includes('any(.type == "service" and .service == $target)'));
+  assert.ok(workflow.includes('any(.service == $target)'));
   assert.ok(workflow.includes('DELETE'));
   assert.ok(workflow.includes('/workers/scripts/testagram-api'));
   assert.ok(workflow.includes("The legacy API Worker remains after deletion"));
