@@ -46,7 +46,7 @@ viewer assertion with the separate Go CDN service credential
 (`ORIGIN_AUTH_TOKEN` / Backend `CDN_ORIGIN_AUTH_TOKEN`).
 
 Do not send assertions in query strings, referrers, analytics or logs. Legacy
-`?token=` media URLs are rejected. Never reuse Appwrite, storage-provider or
+`?token=` media URLs are rejected. Never reuse user access tokens, storage-provider credentials or
 origin-service credentials as the assertion signing secret. The Testagram-native user access JWT and opaque refresh token are also distinct from this viewer assertion: Flutter obtains the short-lived assertion from Backend, and the raw user JWT is never forwarded to the CDN origin.
 
 ## Public media
