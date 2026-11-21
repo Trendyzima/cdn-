@@ -155,6 +155,20 @@ jobs:
             exit 1
           }
 
+          cf_get "/accounts/$CF_ACCOUNT_ID/pages/projects?per_page=100&page=1" "$tmp/pages.json"
+          jq -e '(.result_info.total_pages // 1) <= 1' "$tmp/pages.json" >/dev/null || {
+            echo "::error::Pages project inventory is paginated; refusing an incomplete dependency check."
+            exit 1
+          }
+          while IFS= read -r project; do
+            [[ -n "$project" ]] || continue
+            cf_get "/accounts/$CF_ACCOUNT_ID/pages/projects/$project" "$tmp/page-project.json"
+            if jq -e '.. | objects | select((.service? // "") == "testagram-api" or (.service_name? // "") == "testagram-api")' "$tmp/page-project.json" >/dev/null; then
+              echo "::error::Pages project $project still references testagram-api; refusing deletion."
+              exit 1
+            fi
+          done < <(jq -r '.result[]?.name // empty' "$tmp/pages.json")
+
           while IFS= read -r other; do
             [[ -z "$other" || "$other" == "testagram-api" ]] && continue
             cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts/$other/settings" "$tmp/other-settings.json"
