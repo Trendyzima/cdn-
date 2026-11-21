@@ -12,7 +12,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: testagram-detached-api-worker-cleanup
+  group: testagram-canonical-host-routing
   cancel-in-progress: false
 
 jobs:
