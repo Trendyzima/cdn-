@@ -162,15 +162,22 @@ jobs:
           done < <(jq -r '.result[]?.id // empty' "$tmp/scripts.json")
 
           echo "All ownership, public-health, route, schedule, service-binding and tail-consumer guards passed."
-          curl --silent --show-error --fail --connect-timeout 10 --max-time 45 -X DELETE \
+          delete_status="$(curl --silent --show-error --output "$tmp/delete.json" --write-out '%{http_code}' \
+            --connect-timeout 10 --max-time 45 -X DELETE \
             -H "Authorization: Bearer $CF_API_TOKEN" \
-            -H "Accept: application/json" \
-            "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-api" -o "$tmp/delete.json"
-          jq -e '.success == true' "$tmp/delete.json" >/dev/null || {
-            echo "::error::Cloudflare did not confirm deletion of testagram-api."
-            jq -c '{errors,messages}' "$tmp/delete.json"
+            -H "Accept: application/json" "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-api")"
+          [[ "$delete_status" == "200" || "$delete_status" == "202" || "$delete_status" == "204" ]] || {
+            echo "::error::Cloudflare DELETE failed (HTTP $delete_status) for the exact detached Testagram API Worker."
+            jq -c '{errors,messages}' "$tmp/delete.json" 2>/dev/null || true
             exit 1
           }
+          if [[ -s "$tmp/delete.json" ]]; then
+            jq -e '.success == true' "$tmp/delete.json" >/dev/null || {
+              echo "::error::Cloudflare returned an unsuccessful deletion response."
+              jq -c '{errors,messages}' "$tmp/delete.json"
+              exit 1
+            }
+          fi
 
           cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts?per_page=100&page=1" "$tmp/verify.json"
           jq -e '(.result_info.total_pages // 1) <= 1 and ([.result[]? | select(.id == "testagram-api")] | length == 0)' "$tmp/verify.json" >/dev/null || {
