@@ -8,6 +8,11 @@ on:
         required: true
         type: boolean
         default: false
+      confirm_legacy_api_domain_transfer:
+        description: "Separately authorize detaching api.testagram.site from the exact legacy testagram-api Worker and transferring it to testagram-cdn"
+        required: true
+        type: boolean
+        default: false
       # InstaBox publishes deterministic port hostnames for the selected machine.
       # Derive all three origins from machine_id; never ask an operator to
       # paste a hostname or accidentally place the machine ID in an origin field.
@@ -37,6 +42,7 @@ jobs:
       MACHINE_ID: ${{ secrets.INSTABOX_MACHINE_ID || inputs.machine_id }}
       INSTABOX_API_KEY: ${{ secrets.TESTAGRAM_DB_API || secrets.INSTABOX_API_KEY }}
       CONFIRM_CANONICAL_HOST_ROUTING: ${{ inputs.confirm_canonical_host_routing }}
+      CONFIRM_LEGACY_API_DOMAIN_TRANSFER: ${{ inputs.confirm_legacy_api_domain_transfer }}
     steps:
       - uses: actions/checkout@v4
         with:
