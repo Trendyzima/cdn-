@@ -658,7 +658,7 @@ test("API custom-domain transfer is separately approved, owner-pinned, verified 
   assert.ok(workflow.includes("legacy_api_domain_payload"));
   assert.ok(workflow.includes("Detach only the explicitly approved legacy API custom domain"));
   assert.ok(workflow.includes("Release only api.testagram.site DNS records for the custom-domain handoff"));
-  assert.ok(workflow.includes('".result.name == "api.testagram.site"'));
+  assert.ok(workflow.includes('.result.name == "api.testagram.site"'));
   assert.ok(workflow.includes("The old custom-domain attach below recreates its managed DNS/TLS."));
   assert.ok(workflow.includes("Verify api.testagram.site is owned by the canonical gateway"));
   assert.ok(workflow.includes("Restore the previous API Worker custom-domain owner if gateway cutover fails"));
