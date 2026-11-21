@@ -659,7 +659,7 @@ test("API custom-domain transfer is separately approved, owner-pinned, verified 
   assert.ok(workflow.includes("Detach only the explicitly approved legacy API custom domain"));
   assert.ok(workflow.includes("Verify api.testagram.site is owned by the canonical gateway"));
   assert.ok(workflow.includes("Restore the previous API Worker custom-domain owner if gateway cutover fails"));
-  assert.ok(workflow.includes('".result.hostname == "api.testagram.site"'));
+  assert.ok(workflow.includes('.result.hostname == "api.testagram.site"'));
   assert.ok(workflow.includes('.result.service == "testagram-api"'));
   assert.ok(workflow.includes('.result.service == "testagram-cdn"'));
   assert.ok(workflow.includes('curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$domain_id"'));
