@@ -494,6 +494,40 @@ jobs:
           echo "::error::R2 custom-domain binding did not detach; refusing Worker deployment."
           exit 1
 
+      - name: Detach only the explicitly approved legacy API custom domain
+        id: detach_legacy_api_domain
+        if: steps.preflight.outputs.legacy_api_domain_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          API=https://api.cloudflare.com/client/v4
+          domain_id="${{ steps.preflight.outputs.legacy_api_domain_id }}"
+          zone_id="${{ steps.preflight.outputs.zone_id }}"
+          current="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$domain_id" -H "Authorization: Bearer $CF_API_TOKEN")"
+          jq -e --arg id "$domain_id" --arg zone "$zone_id" '.success == true and .result.id == $id and .result.hostname == "api.testagram.site" and .result.service == "testagram-api" and .result.zone_id == $zone and .result.enabled == true and ((.result.previews_enabled // false) == false)' <<<"$current" >/dev/null || {
+            echo "::error::The exact API custom-domain owner changed after preflight; refusing to detach it."
+            jq -c '{errors,result}' <<<"$current"; exit 1;
+          }
+          curl --retry 2 --retry-all-errors --retry-delay 2 -fsS -X DELETE "$API/accounts/$CF_ACCOUNT_ID/workers/domains/$domain_id" -H "Authorization: Bearer $CF_API_TOKEN" | jq -e '.success == true' >/dev/null
+          detached=false
+          for attempt in $(seq 1 30); do
+            state="$(curl --retry 2 --retry-all-errors -fsS "$API/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" -H "Authorization: Bearer $CF_API_TOKEN")"
+            jq -e '.success == true and ((.result_info.total_pages // 1) <= 1)' <<<"$state" >/dev/null || {
+              echo "::error::Cannot verify API custom-domain detachment; refusing to continue."
+              exit 1;
+            }
+            if ! jq -e --arg zone "$zone_id" '.result[]? | select(.hostname == "api.testagram.site" and .zone_id == $zone)' <<<"$state" >/dev/null; then
+              detached=true
+              break
+            fi
+            sleep 2
+          done
+          [[ "$detached" == "true" ]] || {
+            echo "::error::The legacy API custom-domain binding remains after 60 seconds; refusing Worker deployment."
+            exit 1
+          }
+          echo "Verified the exact legacy API Worker custom domain is detached; Wrangler will attach the canonical gateway domain next."
+
       - name: Store the InstaBox recovery credential as a Cloudflare Worker secret
         shell: bash
         env:
