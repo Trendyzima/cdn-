@@ -431,6 +431,39 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
   assert.equal(originalBody, payload);
 });
 
+test("independently verifies machine identity when the wake response omits its ID", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let machineReads = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      return Response.json({ state: "running", runtime: { ready: true } });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123" && (init.method || "GET") === "GET") {
+      machineReads += 1;
+      return Response.json({ machine: {
+        id: "m_test123", state: "running", desiredState: "running",
+        runtime: { ready: true },
+      } });
+    }
+    if (url.startsWith(apiOrigin)) {
+      originCalls += 1;
+      if (originCalls === 1) return new Response("machine waking", { status: 503 });
+      return new Response("awake", { status: 200 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(machineReads, 1);
+  assert.equal(originCalls, 2);
+});
+
 test("follows the exact concurrent InstaBox resume operation without issuing another start", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
