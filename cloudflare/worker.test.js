@@ -588,9 +588,14 @@ test("wakes a stopped VPS on login but never replays the credential-bearing POST
     if (url === "https://api.instabox.sh/v1/machines/m_test123/start" && method === "POST") {
       startCalls += 1;
       return Response.json({ operation: {
+        id: "login-start-op", type: "start", state: "queued",
+      } }, { status: 202 });
+    }
+    if (url === "https://api.instabox.sh/v1/operations/login-start-op") {
+      return Response.json({ operation: {
         id: "login-start-op", type: "start", state: "succeeded",
         machine: { id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } },
-      } }, { status: 202 });
+      } });
     }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
