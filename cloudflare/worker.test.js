@@ -806,6 +806,9 @@ test("API hostname is attached as a Worker Custom Domain for the guarded legacy-
 test("API custom-domain transfer is separately approved, owner-pinned, verified and rolled back", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
   assert.ok(workflow.includes("confirm_legacy_api_domain_transfer"));
+  assert.ok(workflow.includes('echo "machine_id=$MACHINE_ID"'));
+  assert.ok(workflow.includes('--var "MACHINE_ID:${{ steps.validate_origins.outputs.machine_id }}"'));
+  assert.ok(!workflow.includes('--var "MACHINE_ID:${{ inputs.machine_id }}"'));
   assert.ok(workflow.includes("CONFIRM_LEGACY_API_DOMAIN_TRANSFER"));
   assert.ok(workflow.includes("legacy_api_domain_id"));
   assert.ok(workflow.includes("Detach only the explicitly approved legacy API custom domain"));
