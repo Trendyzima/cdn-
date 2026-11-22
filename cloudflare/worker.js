@@ -310,8 +310,8 @@ async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) 
     },
     body: "{}",
   });
+  const startRetryAfter = retryAfterSeconds(start.headers) ?? retryAfter;
   if (!start.ok) {
-    const startRetryAfter = retryAfterSeconds(start.headers) ?? retryAfter;
     if (start.status === 409) {
       const conflict = await providerJson(start).catch(() => ({}));
       const operationId = conflict?.error?.code === "operation_conflict"
