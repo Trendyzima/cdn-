@@ -27,6 +27,8 @@ jobs:
       - name: Test Cloudflare canonical hostname gateway
         working-directory: cloudflare
         run: npm test
+      - name: Verify guarded production routing workflow invariants
+        run: python3 tests/test_restore_canonical_host_routing_guards.py
       - name: Validate Wrangler custom-domain configuration without deploying
         working-directory: cloudflare
         run: npx --yes wrangler@4 deploy --dry-run --config wrangler.toml --var API_ORIGIN:https://api-origin.example --var CDN_ORIGIN:https://cdn-origin.example --var APEX_ORIGIN:https://apex-origin.example --var MACHINE_ID:m_test123

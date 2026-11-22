@@ -1,0 +1,217 @@
+name: Remove detached legacy API Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_remove_detached_api_worker:
+        description: "Delete only the detached testagram-api Worker after the native gateway owns api.testagram.site and its public health check passes"
+        required: true
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: testagram-canonical-host-routing
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: inputs.confirm_remove_detached_api_worker == true
+    name: Verify native gateway ownership and remove detached API Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify canonical ownership and remove only the detached API Worker
+        shell: bash
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          set +x
+          [[ -n "${CF_API_TOKEN:-}" && -n "${CF_ACCOUNT_ID:-}" ]] || {
+            echo "::error::Cloudflare API token and account ID are required."
+            exit 1
+          }
+          API="https://api.cloudflare.com/client/v4"
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          cf_get() {
+            local path="$1" output="$2" status
+            status="$(curl --silent --show-error --output "$output" --write-out '%{http_code}' \
+              --connect-timeout 10 --max-time 45 \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Accept: application/json" "$API$path")"
+            [[ "$status" == "200" ]] || {
+              echo "::error::Cloudflare GET failed (HTTP $status): $path"
+              jq -r '(.errors // [])[]? | .message // "Cloudflare API error"' "$output" >&2 || true
+              return 1
+            }
+            jq -e '.success == true' "$output" >/dev/null
+          }
+
+          cf_get "/user/tokens/verify" "$tmp/token.json"
+          jq -e '.result.status == "active"' "$tmp/token.json" >/dev/null || {
+            echo "::error::Cloudflare token is not active."
+            exit 1
+          }
+
+          cf_get "/zones?name=testagram.site&status=active" "$tmp/zone.json"
+          jq -e --arg account "$CF_ACCOUNT_ID" '.result | length == 1 and .[0].status == "active" and .[0].account.id == $account' "$tmp/zone.json" >/dev/null || {
+            echo "::error::Could not verify exactly one active Testagram zone in the configured Cloudflare account."
+            exit 1
+          }
+          zone_id="$(jq -r '.result[0].id' "$tmp/zone.json")"
+
+          cf_get "/accounts/$CF_ACCOUNT_ID/workers/domains?per_page=100&page=1" "$tmp/domains.json"
+          jq -e '(.result_info.total_pages // 1) <= 1' "$tmp/domains.json" >/dev/null || {
+            echo "::error::Worker custom-domain inventory is paginated; refusing an incomplete ownership check."
+            exit 1
+          }
+          api_domain_count="$(jq --arg zone "$zone_id" '[.result[]? | select(.hostname == "api.testagram.site" and .zone_id == $zone)] | length' "$tmp/domains.json")"
+          canonical_domain_count="$(jq --arg zone "$zone_id" '[.result[]? | select(.hostname == "api.testagram.site" and .zone_id == $zone and .service == "testagram-cdn" and .enabled == true and ((.previews_enabled // false) == false))] | length' "$tmp/domains.json")"
+          [[ "$api_domain_count" == "1" && "$canonical_domain_count" == "1" ]] || {
+            echo "::error::The canonical Testagram gateway must be the sole enabled production owner of api.testagram.site before legacy Worker cleanup."
+            jq -c '[.result[]? | select(.hostname == "api.testagram.site" and .zone_id == $zone)]' "$tmp/domains.json"
+            exit 1
+          }
+
+          api_status="$(curl --silent --show-error --connect-timeout 10 --max-time 25 \
+            -H 'Cache-Control: no-cache' -D "$tmp/api.headers" -o "$tmp/api-health.json" -w '%{http_code}' \
+            "https://api.testagram.site/healthz?cleanup_probe=$GITHUB_RUN_ID" || true)"
+          grep -Eiq '^x-testagram-service:[[:space:]]*testagram-api[[:space:]]*$' "$tmp/api.headers" || {
+            echo "::error::The public API response does not identify the native Testagram API service."
+            exit 1
+          }
+          if [[ "$api_status" != "200" ]] || ! jq -e '.ok == true and .service == "testagram-api"' "$tmp/api-health.json" >/dev/null; then
+            echo "::error::The native API gateway health check is not healthy; refusing to remove the detached Worker."
+            cat "$tmp/api-health.json"
+            exit 1
+          fi
+
+          api_ready_status="$(curl --silent --show-error --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' "https://api.testagram.site/readyz?cleanup_probe=$GITHUB_RUN_ID" || true)"
+          api_metrics_status="$(curl --silent --show-error --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' "https://api.testagram.site/metrics?cleanup_probe=$GITHUB_RUN_ID" || true)"
+          tv_catalog_status="$(curl --silent --show-error --connect-timeout 10 --max-time 25 -o /dev/null -w '%{http_code}' "https://api.testagram.site/internal/tv/catalog?cleanup_probe=$GITHUB_RUN_ID" || true)"
+          if [[ "$api_ready_status" != "404" || "$api_metrics_status" != "404" || "$tv_catalog_status" != "401" ]]; then
+            echo "::error::Native API private readiness, metrics or protected-route boundary changed; refusing to remove the detached Worker."
+            exit 1
+          fi
+
+          cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts?per_page=100&page=1" "$tmp/scripts.json"
+          jq -e '(.result_info.total_pages // 1) <= 1' "$tmp/scripts.json" >/dev/null || {
+            echo "::error::Worker script inventory is paginated; refusing an incomplete dependency check."
+            exit 1
+          }
+          if ! jq -e '.result[]? | select(.id == "testagram-api")' "$tmp/scripts.json" >/dev/null; then
+            echo "The detached testagram-api Worker is already absent; no action required."
+            exit 0
+          fi
+
+          if jq -e '.result[]? | select(.service == "testagram-api")' "$tmp/domains.json" >/dev/null; then
+            echo "::error::testagram-api still owns a custom domain; refusing deletion."
+            exit 1
+          fi
+
+          : > "$tmp/accounts-zones.tsv"
+          page=1
+          while :; do
+            cf_get "/zones?per_page=50&page=$page" "$tmp/zones-$page.json"
+            jq -r --arg account "$CF_ACCOUNT_ID" '.result[]? | select(.account.id == $account) | [.id,.name] | @tsv' "$tmp/zones-$page.json" >> "$tmp/accounts-zones.tsv"
+            pages="$(jq -r '.result_info.total_pages // 1' "$tmp/zones-$page.json")"
+            [[ "$page" -ge "$pages" ]] && break
+            page=$((page + 1))
+          done
+
+          while IFS=$'\t' read -r candidate_zone zone_name; do
+            [[ -n "$candidate_zone" ]] || continue
+            cf_get "/zones/$candidate_zone/workers/routes?per_page=100&page=1" "$tmp/routes.json"
+            jq -e '(.result_info.total_pages // 1) <= 1' "$tmp/routes.json" >/dev/null || {
+              echo "::error::Worker route inventory is paginated for zone $zone_name; refusing deletion."
+              exit 1
+            }
+            if jq -e '.result[]? | select(.script == "testagram-api")' "$tmp/routes.json" >/dev/null; then
+              echo "::error::testagram-api still owns a route in zone $zone_name; refusing deletion."
+              exit 1
+            fi
+          done < "$tmp/accounts-zones.tsv"
+
+          cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-api/schedules" "$tmp/schedules.json"
+          jq -e '(.result.schedules // []) | length == 0' "$tmp/schedules.json" >/dev/null || {
+            echo "::error::testagram-api still has Cron schedules; refusing deletion."
+            exit 1
+          }
+
+          cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-api/settings" "$tmp/target-settings.json"
+          jq -e '(.result.bindings // [] | map(select(.type == "service" or .type == "queue")) | length) == 0' "$tmp/target-settings.json" >/dev/null || {
+            echo "::error::testagram-api still has service or queue bindings; refusing deletion."
+            exit 1
+          }
+
+          cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-api/script-settings" "$tmp/target-script-settings.json"
+          jq -e '(.result.tail_consumers // []) | length == 0' "$tmp/target-script-settings.json" >/dev/null || {
+            echo "::error::testagram-api still has tail consumers; refusing deletion."
+            exit 1
+          }
+
+          cf_get "/accounts/$CF_ACCOUNT_ID/pages/projects?per_page=100&page=1" "$tmp/pages.json"
+          jq -e '(.result_info.total_pages // 1) <= 1' "$tmp/pages.json" >/dev/null || {
+            echo "::error::Pages project inventory is paginated; refusing an incomplete dependency check."
+            exit 1
+          }
+          while IFS= read -r project; do
+            [[ -n "$project" ]] || continue
+            cf_get "/accounts/$CF_ACCOUNT_ID/pages/projects/$project" "$tmp/page-project.json"
+            if jq -e '.. | objects | select((.service? // "") == "testagram-api" or (.service_name? // "") == "testagram-api")' "$tmp/page-project.json" >/dev/null; then
+              echo "::error::Pages project $project still references testagram-api; refusing deletion."
+              exit 1
+            fi
+          done < <(jq -r '.result[]?.name // empty' "$tmp/pages.json")
+
+          while IFS= read -r other; do
+            [[ -z "$other" || "$other" == "testagram-api" ]] && continue
+            cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts/$other/settings" "$tmp/other-settings.json"
+            if jq -e --arg target "testagram-api" '.result.bindings // [] | any(.type == "service" and .service == $target)' "$tmp/other-settings.json" >/dev/null; then
+              echo "::error::Worker $other still has a service binding to testagram-api; refusing deletion."
+              exit 1
+            fi
+            cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts/$other/script-settings" "$tmp/other-script-settings.json"
+            if jq -e --arg target "testagram-api" '.result.tail_consumers // [] | any(.service == $target)' "$tmp/other-script-settings.json" >/dev/null; then
+              echo "::error::Worker $other still has a tail consumer reference to testagram-api; refusing deletion."
+              exit 1
+            fi
+          done < <(jq -r '.result[]?.id // empty' "$tmp/scripts.json")
+
+          echo "All ownership, public-health, route, schedule, service-binding and tail-consumer guards passed."
+          delete_status="$(curl --silent --show-error --output "$tmp/delete.json" --write-out '%{http_code}' \
+            --connect-timeout 10 --max-time 45 -X DELETE \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Accept: application/json" "$API/accounts/$CF_ACCOUNT_ID/workers/scripts/testagram-api")"
+          [[ "$delete_status" == "200" || "$delete_status" == "202" || "$delete_status" == "204" ]] || {
+            echo "::error::Cloudflare DELETE failed (HTTP $delete_status) for the exact detached Testagram API Worker."
+            jq -c '{errors,messages}' "$tmp/delete.json" 2>/dev/null || true
+            exit 1
+          }
+          if [[ -s "$tmp/delete.json" ]]; then
+            jq -e '.success == true' "$tmp/delete.json" >/dev/null || {
+              echo "::error::Cloudflare returned an unsuccessful deletion response."
+              jq -c '{errors,messages}' "$tmp/delete.json"
+              exit 1
+            }
+          fi
+
+          cf_get "/accounts/$CF_ACCOUNT_ID/workers/scripts?per_page=100&page=1" "$tmp/verify.json"
+          jq -e '(.result_info.total_pages // 1) <= 1 and ([.result[]? | select(.id == "testagram-api")] | length == 0)' "$tmp/verify.json" >/dev/null || {
+            echo "::error::The legacy API Worker remains after deletion; refusing to report cleanup success."
+            exit 1
+          }
+
+          {
+            echo "## Detached Testagram API Worker cleanup"
+            echo "- Verified api.testagram.site is owned exactly once by the enabled production testagram-cdn gateway."
+            echo "- Verified the public native API health response before deletion."
+            echo "- Verified no Worker routes, custom domains, schedules, service bindings or tail consumers reference testagram-api."
+            echo "- Deleted only the testagram-api Worker script; no DNS records, routes, storage buckets or database records were changed."
+            echo "- Verified the Worker script is absent after deletion."
+          } >> "$GITHUB_STEP_SUMMARY"

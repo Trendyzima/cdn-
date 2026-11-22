@@ -4,12 +4,13 @@ compatibility_date = "2026-11-15"
 workers_dev = false
 preview_urls = false
 
-# api.testagram.site already has proxied DNS. Use a Worker Route so the
-# gateway can proxy to the published InstaBox Backend origin without replacing
-# the existing A/AAAA records.
+# The API hostname is a Worker Custom Domain. The guarded cutover
+# transfers it from the old API Worker to this gateway, and Wrangler manages
+# the hostname's DNS/TLS binding. The gateway still proxies to the Backend
+# origin supplied through API_ORIGIN; it is not the identity authority.
 [[routes]]
-pattern = "api.testagram.site/*"
-zone_name = "testagram.site"
+pattern = "api.testagram.site"
+custom_domain = true
 
 # testagram.site remains the Backend/Federation identity hostname. The Worker
 # sends it to the dedicated Caddy listener: ActivityPub stays on the apex,
