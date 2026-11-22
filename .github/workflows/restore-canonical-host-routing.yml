@@ -222,6 +222,7 @@ jobs:
             echo "api_origin=$API_ORIGIN"
             echo "cdn_origin=$CDN_ORIGIN"
             echo "apex_origin=$APEX_ORIGIN"
+            echo "machine_id=$MACHINE_ID"
           } >> "$GITHUB_OUTPUT"
 
       - name: Preflight Cloudflare zone and existing hostname ownership
@@ -652,7 +653,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloudflare
-          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ steps.validate_origins.outputs.api_origin }}" --var "CDN_ORIGIN:${{ steps.validate_origins.outputs.cdn_origin }}" --var "APEX_ORIGIN:${{ steps.validate_origins.outputs.apex_origin }}" --var "MACHINE_ID:${{ inputs.machine_id }}"
+          command: deploy --config wrangler.toml --var "API_ORIGIN:${{ steps.validate_origins.outputs.api_origin }}" --var "CDN_ORIGIN:${{ steps.validate_origins.outputs.cdn_origin }}" --var "APEX_ORIGIN:${{ steps.validate_origins.outputs.apex_origin }}" --var "MACHINE_ID:${{ steps.validate_origins.outputs.machine_id }}"
 
       - name: Verify api.testagram.site is owned by the canonical gateway
         id: verify_api_domain

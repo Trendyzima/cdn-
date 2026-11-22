@@ -212,6 +212,144 @@ function retryAfterSeconds(headers) {
   return Number.isSafeInteger(seconds) && seconds > 0 ? Math.min(seconds, 86400) : null;
 }
 
+async function providerJson(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error("instabox_invalid_json");
+  }
+}
+
+function providerObject(payload, key) {
+  if (key && payload?.[key] && typeof payload[key] === "object") return payload[key];
+  if (payload?.data && typeof payload.data === "object") {
+    if (key && payload.data[key] && typeof payload.data[key] === "object") return payload.data[key];
+    return payload.data;
+  }
+  return payload;
+}
+
+function readyMachine(machine, machineId) {
+  return String(machine?.id || "") === machineId &&
+    machine?.state === "running" &&
+    machine?.runtime?.ready === true &&
+    (machine?.desiredState === undefined || machine.desiredState === "running");
+}
+
+async function verifyReadyMachine(candidate, machineUrl, auth, machineId, retryAfter) {
+  if (candidate?.id && String(candidate.id) !== machineId) {
+    return { ready: false, retryAfter };
+  }
+  if (readyMachine(candidate, machineId)) return { ready: true, retryAfter: null };
+
+  // Some provider operation responses omit the machine ID. In that case,
+  // never infer identity from state alone: read the exact machine URL again.
+  if (!candidate?.id && candidate?.state === "running" && candidate?.runtime?.ready === true) {
+    const current = await fetch(machineUrl, { headers: auth });
+    if (!current.ok) {
+      return { ready: false, retryAfter: retryAfterSeconds(current.headers) ?? retryAfter };
+    }
+    const machine = providerObject(await providerJson(current), "machine");
+    return { ready: readyMachine(machine, machineId), retryAfter: null };
+  }
+  return { ready: false, retryAfter };
+}
+
+async function waitForLifecycleOperation(operationId, machineUrl, auth, machineId, retryAfter) {
+  if (typeof operationId !== "string" || !operationId) {
+    return { ready: false, retryAfter };
+  }
+  const operationUrl = "https://api.instabox.sh/v1/operations/" + encodeURIComponent(operationId);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const response = await fetch(operationUrl, { headers: auth });
+    if (!response.ok) {
+      return { ready: false, retryAfter: retryAfterSeconds(response.headers) ?? retryAfter };
+    }
+    const operation = providerObject(await providerJson(response), "operation");
+    if (!["start", "resume"].includes(operation?.type)) {
+      return { ready: false, retryAfter };
+    }
+    if (operation.state === "failed") {
+      const operationRetry = Number(operation?.error?.retryAfterSeconds);
+      return {
+        ready: false,
+        retryAfter: Number.isSafeInteger(operationRetry) && operationRetry > 0
+          ? Math.min(operationRetry, 86400)
+          : retryAfter,
+      };
+    }
+    if (operation.state === "succeeded") {
+      return verifyReadyMachine(operation.machine, machineUrl, auth, machineId, retryAfter);
+    }
+    if (!["queued", "running"].includes(operation.state)) {
+      return { ready: false, retryAfter };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return { ready: false, retryAfter };
+}
+
+async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) {
+  const snapshotResponse = await fetch(machineUrl, { headers: auth });
+  if (!snapshotResponse.ok) {
+    return { ready: false, retryAfter: retryAfterSeconds(snapshotResponse.headers) ?? retryAfter };
+  }
+  const machine = providerObject(await providerJson(snapshotResponse), "machine");
+  if (String(machine?.id || "") !== machineId) return { ready: false, retryAfter };
+  if (machine.state === "running" && readyMachine(machine, machineId)) {
+    return { ready: true, retryAfter: null };
+  }
+
+  // A stopped machine is started only when the provider still records the
+  // desired state as running. Manual stop/suspend is operator intent and must
+  // never be undone by an ordinary user request.
+  if (machine.state !== "stopped" || machine.desiredState !== "running") {
+    return { ready: false, retryAfter };
+  }
+  if (machine.operationId) {
+    return waitForLifecycleOperation(machine.operationId, machineUrl, auth, machineId, retryAfter);
+  }
+
+  const start = await fetch(machineUrl + "/start", {
+    method: "POST",
+    headers: {
+      ...auth,
+      "Content-Type": "application/json",
+      "Idempotency-Key": `testagram-start-${crypto.randomUUID()}`,
+    },
+    body: "{}",
+  });
+  const startRetryAfter = retryAfterSeconds(start.headers) ?? retryAfter;
+  if (!start.ok) {
+    if (start.status === 409) {
+      const conflict = await providerJson(start).catch(() => ({}));
+      const operationId = conflict?.error?.code === "operation_conflict"
+        ? conflict.error.operationId
+        : null;
+      if (typeof operationId === "string" && operationId) {
+        return waitForLifecycleOperation(operationId, machineUrl, auth, machineId, startRetryAfter);
+      }
+    }
+    return { ready: false, retryAfter: startRetryAfter };
+  }
+
+  const started = providerObject(await providerJson(start), "operation");
+  if (started?.id) {
+    return waitForLifecycleOperation(String(started.id), machineUrl, auth, machineId, startRetryAfter);
+  }
+
+  // A synchronous provider response is accepted only after an independent
+  // read confirms the exact machine is running and runtime-ready.
+  const finalResponse = await fetch(machineUrl, { headers: auth });
+  if (!finalResponse.ok) {
+    return { ready: false, retryAfter: retryAfterSeconds(finalResponse.headers) ?? retryAfter };
+  }
+  const finalMachine = providerObject(await providerJson(finalResponse), "machine");
+  return { ready: readyMachine(finalMachine, machineId), retryAfter: null };
+}
+
 async function wakeMachine(env) {
   const machineId = typeof env.MACHINE_ID === "string" ? env.MACHINE_ID.trim() : "";
   const apiKey = typeof env.INSTABOX_API_KEY === "string" ? env.INSTABOX_API_KEY : "";
@@ -222,94 +360,39 @@ async function wakeMachine(env) {
   const machineUrl = api + "/v1/machines/" + encodeURIComponent(machineId);
 
   try {
-    // InstaBox's dedicated wake endpoint is specifically for an idle-suspended
-    // machine. It waits for the resume to finish (up to 45 seconds), coalesces
-    // concurrent callers, and deliberately does not undo a manual stop/suspend.
-    // Do not use /start for every non-running state: that is wrong for paused VMs.
+    // The dedicated wake endpoint handles an idle-suspended machine and
+    // coalesces concurrent callers. It deliberately does not override a
+    // manual stop. Unexpectedly stopped machines use the guarded /start path
+    // below only when desiredState still says running.
     const wake = await fetch(machineUrl + "/wake", {
       method: "POST",
       headers: {
         ...auth,
         "Content-Type": "application/json",
-        // InstaBox requires an idempotency key for lifecycle operations.
         "Idempotency-Key": `testagram-wake-${crypto.randomUUID()}`,
       },
       body: "{}",
     });
     if (wake.ok) {
-      const machine = await wake.json();
-      return {
-        ready: machine?.state === "running" && machine?.runtime?.ready === true,
-        retryAfter: null,
-      };
+      const machine = providerObject(await providerJson(wake), "machine");
+      return verifyReadyMachine(machine, machineUrl, auth, machineId, null);
     }
 
-    // Preserve provider cooldown hints. In particular, max-run cooldowns can
-    // last much longer than the default five-second cold-start retry.
     const wakeRetryAfter = retryAfterSeconds(wake.headers);
-
-    // A concurrent start/resume may already be queued. Follow that exact
-    // operation rather than guessing from a transient machine state (which can
-    // still say "suspended" while a resume operation is queued).
-    if (wake.status !== 409) return { ready: false, retryAfter: wakeRetryAfter };
-    const failure = await wake.json().catch(() => ({}));
-    const operationId = failure?.error?.code === "operation_conflict"
-      ? failure.error.operationId
-      : null;
-    if (typeof operationId !== "string" || !operationId) {
-      return { ready: false, retryAfter: wakeRetryAfter };
+    const failure = await providerJson(wake).catch(() => ({}));
+    if (wake.status === 409 && failure?.error?.code === "operation_conflict") {
+      return waitForLifecycleOperation(
+        failure.error.operationId, machineUrl, auth, machineId, wakeRetryAfter,
+      );
     }
-
-    const operationUrl = api + "/v1/operations/" + encodeURIComponent(operationId);
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      const response = await fetch(operationUrl, { headers: auth });
-      if (!response.ok) {
-        return {
-          ready: false,
-          retryAfter: retryAfterSeconds(response.headers) ?? wakeRetryAfter,
-        };
-      }
-      const operation = await response.json();
-      if (!["resume", "start"].includes(operation?.type)) {
-        return { ready: false, retryAfter: wakeRetryAfter };
-      }
-      if (operation.state === "failed") {
-        const operationRetry = Number(operation?.error?.retryAfterSeconds);
-        return {
-          ready: false,
-          retryAfter: Number.isSafeInteger(operationRetry) && operationRetry > 0
-            ? Math.min(operationRetry, 86400)
-            : wakeRetryAfter,
-        };
-      }
-      if (operation.state === "succeeded") {
-        let machine = operation.machine;
-        if (!machine) {
-          const current = await fetch(machineUrl, { headers: auth });
-          if (!current.ok) {
-            return {
-              ready: false,
-              retryAfter: retryAfterSeconds(current.headers) ?? wakeRetryAfter,
-            };
-          }
-          machine = await current.json();
-        }
-        return {
-          ready: machine?.state === "running" && machine?.runtime?.ready === true,
-          retryAfter: null,
-        };
-      }
-      if (!["queued", "running"].includes(operation.state)) {
-        return { ready: false, retryAfter: wakeRetryAfter };
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (wake.status === 409 && failure?.error?.code === "machine_not_running") {
+      return wakeStoppedMachine(env, machineUrl, auth, machineId, wakeRetryAfter);
     }
+    return { ready: false, retryAfter: wakeRetryAfter };
   } catch {
     return { ready: false, retryAfter: null };
   }
-  return { ready: false, retryAfter: null };
 }
-
 function recoveryUnavailable(error, retryAfter = null, request = null) {
   const response = json({ ok: false, error }, 503);
   const headers = new Headers(response.headers);
