@@ -238,6 +238,25 @@ function readyMachine(machine, machineId) {
     (machine?.desiredState === undefined || machine.desiredState === "running");
 }
 
+async function verifyReadyMachine(candidate, machineUrl, auth, machineId, retryAfter) {
+  if (candidate?.id && String(candidate.id) !== machineId) {
+    return { ready: false, retryAfter };
+  }
+  if (readyMachine(candidate, machineId)) return { ready: true, retryAfter: null };
+
+  // Some provider operation responses omit the machine ID. In that case,
+  // never infer identity from state alone: read the exact machine URL again.
+  if (!candidate?.id && candidate?.state === "running" && candidate?.runtime?.ready === true) {
+    const current = await fetch(machineUrl, { headers: auth });
+    if (!current.ok) {
+      return { ready: false, retryAfter: retryAfterSeconds(current.headers) ?? retryAfter };
+    }
+    const machine = providerObject(await providerJson(current), "machine");
+    return { ready: readyMachine(machine, machineId), retryAfter: null };
+  }
+  return { ready: false, retryAfter };
+}
+
 async function waitForLifecycleOperation(operationId, machineUrl, auth, machineId, retryAfter) {
   if (typeof operationId !== "string" || !operationId) {
     return { ready: false, retryAfter };
@@ -262,15 +281,7 @@ async function waitForLifecycleOperation(operationId, machineUrl, auth, machineI
       };
     }
     if (operation.state === "succeeded") {
-      let machine = operation.machine;
-      if (!machine || typeof machine !== "object") {
-        const current = await fetch(machineUrl, { headers: auth });
-        if (!current.ok) {
-          return { ready: false, retryAfter: retryAfterSeconds(current.headers) ?? retryAfter };
-        }
-        machine = providerObject(await providerJson(current), "machine");
-      }
-      return { ready: readyMachine(machine, machineId), retryAfter: null };
+      return verifyReadyMachine(operation.machine, machineUrl, auth, machineId, retryAfter);
     }
     if (!["queued", "running"].includes(operation.state)) {
       return { ready: false, retryAfter };
@@ -364,7 +375,7 @@ async function wakeMachine(env) {
     });
     if (wake.ok) {
       const machine = providerObject(await providerJson(wake), "machine");
-      return { ready: readyMachine(machine, machineId), retryAfter: null };
+      return verifyReadyMachine(machine, machineUrl, auth, machineId, null);
     }
 
     const wakeRetryAfter = retryAfterSeconds(wake.headers);
