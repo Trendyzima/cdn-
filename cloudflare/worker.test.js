@@ -657,7 +657,7 @@ test("wakes a stopped VPS on login but never replays the credential-bearing POST
 
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error, "machine_awake_retry_required");
-  assert.equal(response.headers.get("x-testagram-recovery"), "ready");
+  assert.equal(response.headers.get("x-testagram-recovery"), "attempted");
   assert.equal(startCalls, 1);
   assert.equal(originCalls, 1);
 });
