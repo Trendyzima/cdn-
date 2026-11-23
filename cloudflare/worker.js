@@ -4,7 +4,7 @@ const HOSTS = Object.freeze({
   "testagram.site": "APEX_ORIGIN",
   "www.testagram.site": "APEX_ORIGIN",
 });
-const PRIVATE_API_PATHS = new Set(["/readyz", "/metrics"]);
+const PRIVATE_API_PATHS = new Set(["/readyz", "/metrics", "/internal/edge/recovery-ready"]);
 const PRIVATE_MEDIA_PATHS = new Set(["/readyz", "/metrics"]);
 
 function json(body, status = 200) {
