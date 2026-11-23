@@ -442,6 +442,36 @@ test("does not start a second provider operation when the safe retry transport f
 });
 
 
+test("does not trust a client-forged Backend response marker when the provider origin is unavailable", async (t) => {
+  restoreFetch(t);
+  let wakeCalls = 0;
+  let originCalls = 0;
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === apiOrigin + "/api/social/feed") {
+      originCalls += 1;
+      assert.equal(request.headers.get("x-testagram-service"), null, "Worker must strip client-supplied response identity");
+      if (originCalls === 1) return new Response("provider unavailable", { status: 503 });
+      return new Response("feed ready", { status: 200 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return Response.json({ id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+  const response = await worker.fetch(new Request("https://api.testagram.site/api/social/feed", {
+    headers: { "x-testagram-service": "testagram-api" },
+  }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "feed ready");
+  assert.equal(wakeCalls, 1);
+  assert.equal(originCalls, 2);
+});
+
 test("does not wake the provider for an application-generated 503 with a Backend request ID", async (t) => {
   restoreFetch(t);
   let wakeCalls = 0;
@@ -452,7 +482,7 @@ test("does not wake the provider for an application-generated 503 with a Backend
       originCalls += 1;
       return new Response(JSON.stringify({ ok: false, error: { code: "DEPENDENCY_UNAVAILABLE" } }), {
         status: 503,
-        headers: { "x-request-id": "req_backend_123", "content-type": "application/json" },
+        headers: { "x-request-id": "req_backend_123", "x-testagram-service": "testagram-api", "content-type": "application/json" },
       });
     }
     if (url.includes("/v1/machines/")) {
