@@ -33,3 +33,15 @@ custom_domain = true
 
 [observability]
 enabled = true
+
+
+# Durable per-machine lifecycle coordination. The object retains the same
+# provider idempotency key across inbound retries until the Backend and
+# PostgreSQL readiness capability confirms the recovery epoch is complete.
+[[durable_objects.bindings]]
+name = "RECOVERY_COORDINATOR"
+class_name = "RecoveryCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RecoveryCoordinator"]
