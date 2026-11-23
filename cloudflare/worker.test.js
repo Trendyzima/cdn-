@@ -1320,6 +1320,7 @@ test("Wrangler binds the durable recovery coordinator and declares its SQLite mi
   assert.match(config, /new_sqlite_classes = \["RecoveryCoordinator"\]/);
 });
 
+// The recovery epoch is a durable provider-idempotency boundary, not a request cache.
 test("Durable Object retains lifecycle keys across retries and rotates them only after completion", async () => {
   const values = new Map();
   const storage = {
