@@ -16,6 +16,7 @@ function restoreFetch(t) {
   t.after(() => { globalThis.fetch = original; });
 }
 
+
 test("answers approved browser preflights at the edge without waking the machine", async (t) => {
   restoreFetch(t);
   let fetches = 0;
@@ -40,6 +41,7 @@ test("answers approved browser preflights at the edge without waking the machine
   assert.equal(response.headers.get("access-control-max-age"), "600");
   assert.equal(fetches, 0);
 });
+
 
 test("rejects unapproved or unsupported browser preflights without contacting an origin", async (t) => {
   restoreFetch(t);
@@ -79,6 +81,7 @@ test("rejects unapproved or unsupported browser preflights without contacting an
   assert.equal(fetches, 0);
 });
 
+
 test("leaves media-host preflights on the media origin's own CORS policy", async (t) => {
   restoreFetch(t);
   let fetches = 0;
@@ -99,6 +102,7 @@ test("leaves media-host preflights on the media origin's own CORS policy", async
   assert.equal(response.status, 204);
   assert.equal(fetches, 1);
 });
+
 
 test("canonical API hostname proxies to the verified Backend origin", async (t) => {
   restoreFetch(t);
@@ -129,6 +133,7 @@ test("canonical API hostname proxies to the verified Backend origin", async (t) 
   assert.deepEqual(await response.json(), { ok: true, service: "testagram-api" });
 });
 
+
 test("canonical media hostname proxies to the Go CDN and preserves its identity", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -155,6 +160,7 @@ test("canonical media hostname proxies to the Go CDN and preserves its identity"
   assert.deepEqual(await response.json(), { ok: true, service: "testagram-cdn" });
 });
 
+
 test("apex WebFinger and ActivityPub paths proxy to the dedicated Caddy origin", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -178,6 +184,7 @@ test("apex WebFinger and ActivityPub paths proxy to the dedicated Caddy origin",
   assert.equal(response.headers.get("content-type"), "application/jrd+json");
 });
 
+
 test("www frontend hostname proxies to the self-hosted Flutter origin", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -200,6 +207,7 @@ test("www frontend hostname proxies to the self-hosted Flutter origin", async (t
   assert.ok((await response.text()).includes("flutter_bootstrap.js"));
 });
 
+
 test("apex ordinary web paths preserve Caddy's canonical redirect to www", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -219,6 +227,7 @@ test("apex ordinary web paths preserve Caddy's canonical redirect to www", async
   assert.equal(response.headers.get("location"), "https://www.testagram.site/about?from=apex");
 });
 
+
 test("public API hides readiness and metrics while preserving liveness", async (t) => {
   restoreFetch(t);
   let fetches = 0;
@@ -230,6 +239,7 @@ test("public API hides readiness and metrics while preserving liveness", async (
   assert.equal(fetches, 0);
 });
 
+
 test("media gateway hides readiness and metrics while preserving public liveness", async (t) => {
   restoreFetch(t);
   let fetches = 0;
@@ -240,6 +250,7 @@ test("media gateway hides readiness and metrics while preserving public liveness
   assert.equal(metrics.status, 404);
   assert.equal(fetches, 0);
 });
+
 
 test("replaces spoofed forwarding metadata and strips hop-by-hop headers", async (t) => {
   restoreFetch(t);
@@ -275,6 +286,7 @@ test("replaces spoofed forwarding metadata and strips hop-by-hop headers", async
   }
 });
 
+
 test("forwards API methods, authorization, JSON body and query without changing the contract", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -298,6 +310,7 @@ test("forwards API methods, authorization, JSON body and query without changing 
   assert.equal(new URL(upstream.url).search, "?source=mobile");
 });
 
+
 test("preserves range requests and viewer authorization for private media", async (t) => {
   restoreFetch(t);
   let upstream;
@@ -318,6 +331,7 @@ test("preserves range requests and viewer authorization for private media", asyn
   assert.equal(response.headers.get("cache-control"), "private, no-store");
 });
 
+
 test("fails closed when either origin is missing, insecure, or points back to a canonical host", async (t) => {
   restoreFetch(t);
   let fetches = 0;
@@ -337,6 +351,7 @@ test("fails closed when either origin is missing, insecure, or points back to a 
   assert.equal(fetches, 0);
 });
 
+
 test("rejects unknown hostnames instead of acting as an open proxy", async (t) => {
   restoreFetch(t);
   let fetches = 0;
@@ -345,6 +360,7 @@ test("rejects unknown hostnames instead of acting as an open proxy", async (t) =
   assert.equal(response.status, 421);
   assert.equal(fetches, 0);
 });
+
 
 test("rewrites same-origin redirects back to the canonical hostname", async (t) => {
   restoreFetch(t);
@@ -356,6 +372,7 @@ test("rewrites same-origin redirects back to the canonical hostname", async (t) 
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), "https://api.testagram.site/auth/callback?next=%2Ffeed");
 });
+
 
 test("preserves WebSocket upgrade semantics when proxying", async (t) => {
   restoreFetch(t);
@@ -371,6 +388,7 @@ test("preserves WebSocket upgrade semantics when proxying", async (t) => {
   assert.equal(upstream.headers.get("connection"), "Upgrade");
   assert.equal(upstream.headers.get("upgrade"), "websocket");
 });
+
 
 test("protocol-relative paths cannot escape the configured origin", async (t) => {
   restoreFetch(t);
@@ -389,6 +407,7 @@ test("protocol-relative paths cannot escape the configured origin", async (t) =>
   assert.equal(new URL(upstream.url).search, "?x=1");
 });
 
+
 test("does not start a second provider operation when the safe retry transport fails", async (t) => {
   restoreFetch(t);
   let wakeCalls = 0;
@@ -396,6 +415,10 @@ test("does not start a second provider operation when the safe retry transport f
   let originCalls = 0;
   globalThis.fetch = async (request) => {
     const url = typeof request === "string" ? request : request.url;
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      readinessCalls += 1;
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
     if (url === apiOrigin + "/api/social/feed") {
       originCalls += 1;
       if (originCalls === 1) return new Response("gateway unavailable", { status: 502 });
@@ -404,10 +427,6 @@ test("does not start a second provider operation when the safe retry transport f
     if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
       wakeCalls += 1;
       return Response.json({ id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } });
-    }
-    if (url === apiOrigin + "/internal/edge/recovery-ready") {
-      readinessCalls += 1;
-      return Response.json({ ok: true, ready: true, service: "testagram-api" });
     }
     throw new Error("unexpected fetch: " + url);
   };
@@ -421,6 +440,7 @@ test("does not start a second provider operation when the safe retry transport f
   assert.equal(wakeCalls, 1, "one inbound request may initiate only one provider lifecycle operation");
   assert.equal(readinessCalls, 1);
 });
+
 
 test("does not wake the provider for an application-generated 503 with a Backend request ID", async (t) => {
   restoreFetch(t);
@@ -450,6 +470,7 @@ test("does not wake the provider for an application-generated 503 with a Backend
   assert.equal(originCalls, 1);
   assert.equal(wakeCalls, 0);
 });
+
 
 test("uses the documented InstaBox idle-wake endpoint and replays an idempotent request", async (t) => {
   restoreFetch(t);
@@ -494,6 +515,7 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
   assert.equal(originalBody, payload);
 });
 
+
 test("polls the exact provider machine after wake acceptance until runtime readiness", async (t) => {
   restoreFetch(t);
   let machineReads = 0;
@@ -534,6 +556,7 @@ test("polls the exact provider machine after wake acceptance until runtime readi
   assert.equal(originCalls, 2);
 });
 
+
 test("follows an asynchronous operation returned by the provider wake endpoint", async (t) => {
   restoreFetch(t);
   let operationReads = 0;
@@ -571,6 +594,7 @@ test("follows an asynchronous operation returned by the provider wake endpoint",
   assert.equal(originCalls, 2);
 });
 
+
 test("independently verifies machine identity when the wake response omits its ID", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
@@ -604,6 +628,7 @@ test("independently verifies machine identity when the wake response omits its I
   assert.equal(machineReads, 1);
   assert.equal(originCalls, 2);
 });
+
 
 test("follows the exact concurrent InstaBox resume operation without issuing another start", async (t) => {
   restoreFetch(t);
@@ -648,6 +673,7 @@ test("follows the exact concurrent InstaBox resume operation without issuing ano
   assert.equal(operationReads, 2);
 });
 
+
 test("does not override a manually stopped or suspended machine", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
@@ -686,6 +712,7 @@ test("does not override a manually stopped or suspended machine", async (t) => {
   assert.equal(machineReads, 1);
   assert.equal(startCalls, 0);
 });
+
 
 test("starts an unexpectedly stopped VPS only while desiredState remains running", async (t) => {
   restoreFetch(t);
@@ -747,6 +774,7 @@ test("starts an unexpectedly stopped VPS only while desiredState remains running
   assert.equal(originCalls, 2);
 });
 
+
 test("wakes a stopped VPS on login but never replays the credential-bearing POST", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
@@ -795,6 +823,7 @@ test("wakes a stopped VPS on login but never replays the credential-bearing POST
   assert.equal(originCalls, 1);
 });
 
+
 test("keeps login intent pending until provider and PostgreSQL readiness are independently confirmed", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
@@ -833,6 +862,7 @@ test("keeps login intent pending until provider and PostgreSQL readiness are ind
   assert.equal(originCalls, 1, "gateway must not replay credential-bearing login POST");
 });
 
+
 test("does not expose the edge-only readiness capability through the public API hostname", async () => {
   const response = await worker.fetch(new Request("https://api.testagram.site/internal/edge/recovery-ready"), env({
     MACHINE_ID: "m_test123",
@@ -840,6 +870,7 @@ test("does not expose the edge-only readiness capability through the public API 
   }));
   assert.equal(response.status, 404);
 });
+
 
 test("does not replay a non-idempotent POST after waking the machine", async (t) => {
   restoreFetch(t);
@@ -870,6 +901,7 @@ test("does not replay a non-idempotent POST after waking the machine", async (t)
   assert.equal(originCalls, 1);
   assert.equal(wakeCalls, 1);
 });
+
 
 test("does not replay unrelated mutations even when they carry an Idempotency-Key", async (t) => {
   restoreFetch(t);
@@ -903,6 +935,7 @@ test("does not replay unrelated mutations even when they carry an Idempotency-Ke
   assert.equal(originCalls, 1);
   assert.equal(wakeCalls, 1);
 });
+
 
 test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) => {
   restoreFetch(t);
@@ -950,6 +983,7 @@ test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) =>
   assert.equal(wakeCalls, 1);
 });
 
+
 test("does not reflect an unapproved origin on machine recovery responses", async (t) => {
   restoreFetch(t);
   globalThis.fetch = async (request) => {
@@ -976,6 +1010,7 @@ test("does not reflect an unapproved origin on machine recovery responses", asyn
   assert.equal(response.headers.get("retry-after"), "30");
 });
 
+
 test("returns a retryable 503 when the origin fails and wake credentials are absent", async (t) => {
   restoreFetch(t);
   globalThis.fetch = async () => { throw new Error("network failure"); };
@@ -984,6 +1019,7 @@ test("returns a retryable 503 when the origin fails and wake credentials are abs
   assert.equal((await response.json()).error, "machine_wake_failed");
   assert.equal(response.headers.get("retry-after"), "5");
 });
+
 
 
 test("API hostname is attached as a Worker Custom Domain for the guarded legacy-owner handoff", () => {
@@ -998,6 +1034,7 @@ test("API hostname is attached as a Worker Custom Domain for the guarded legacy-
   const apiRoute = config.split("[[routes]]").find((route) => route.includes('pattern = "api.testagram.site"'));
   assert.ok(apiRoute?.includes("custom_domain = true"));
 });
+
 test("API custom-domain transfer is separately approved, owner-pinned, verified and rolled back", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
   assert.ok(workflow.includes("confirm_legacy_api_domain_transfer"));
@@ -1026,6 +1063,7 @@ test("API custom-domain transfer is separately approved, owner-pinned, verified 
   const gatewayVerifyIndex = workflow.indexOf("Verify canonical API, Go CDN, Flutter web and apex identities");
   assert.ok(preflightIndex < detachIndex && detachIndex < dnsReleaseIndex && dnsReleaseIndex < deployIndex && deployIndex < ownerVerifyIndex && ownerVerifyIndex < gatewayVerifyIndex);
 });
+
 
 test("detached legacy API Worker cleanup is separately approved and native-gateway guarded", () => {
   const workflow = readFileSync(new URL("../.github/workflows/cleanup-detached-api-worker.yml", import.meta.url), "utf8");
@@ -1059,6 +1097,7 @@ test("detached legacy API Worker cleanup is separately approved and native-gatew
   const verifyIndex = workflow.indexOf("The legacy API Worker remains after deletion");
   assert.ok(approvalIndex < ownerIndex && ownerIndex < healthIndex && healthIndex < routeIndex && routeIndex < deleteIndex && deleteIndex < verifyIndex);
 });
+
 
 test("canonical production cutover verifies real public federation contracts after deployment", () => {
   const workflow = readFileSync(new URL("../.github/workflows/restore-canonical-host-routing.yml", import.meta.url), "utf8");
