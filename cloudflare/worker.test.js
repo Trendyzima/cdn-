@@ -10,11 +10,11 @@ const apexOrigin = "https://machine-apex.instabox.sh";
 function env(overrides = {}) {
   const state = new Map();
   const leases = new Set();
-  let completed = false;
+  let retireWhenIdle = false;
   const stub = { async fetch(url, init = {}) {
     const path = new URL(url).pathname;
     if (path === "/acquire" && init.method === "POST") {
-      if (completed && leases.size === 0) { state.clear(); completed = false; }
+      if (retireWhenIdle && leases.size === 0) { state.clear(); retireWhenIdle = false; }
       const leaseId = "lease-" + crypto.randomUUID();
       leases.add(leaseId);
       return Response.json({ ok: true, leaseId });
@@ -26,9 +26,9 @@ function env(overrides = {}) {
       return Response.json({ ok: true, key: state.get(action) });
     }
     if (path === "/release" && init.method === "POST") {
-      const { leaseId, completed: success } = JSON.parse(init.body);
+      const { leaseId, retireEpoch } = JSON.parse(init.body);
       if (!leases.delete(leaseId)) return new Response("lease missing", { status: 409 });
-      if (success === true) completed = true;
+      if (retireEpoch === true) retireWhenIdle = true;
       return Response.json({ ok: true });
     }
     return new Response("Not Found", { status: 404 });
@@ -1356,8 +1356,8 @@ test("Durable Object retains keys while concurrent recovery leases exist and rot
     assert.equal(response.status, 200);
     return (await response.json()).key;
   };
-  const release = (leaseId, completed) =>
-    coordinator.fetch(request("/release", { leaseId, completed }));
+  const release = (leaseId, retireEpoch) =>
+    coordinator.fetch(request("/release", { leaseId, retireEpoch }));
 
   const firstLease = await acquire();
   const concurrentLease = await acquire();
