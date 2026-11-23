@@ -9,20 +9,33 @@ const apexOrigin = "https://machine-apex.instabox.sh";
 
 function env(overrides = {}) {
   const state = new Map();
+  const leases = new Set();
+  let completed = false;
   const stub = { async fetch(url, init = {}) {
     const path = new URL(url).pathname;
+    if (path === "/acquire" && init.method === "POST") {
+      if (completed && leases.size === 0) { state.clear(); completed = false; }
+      const leaseId = "lease-" + crypto.randomUUID();
+      leases.add(leaseId);
+      return Response.json({ ok: true, leaseId });
+    }
     if (path === "/key" && init.method === "POST") {
-      const { action } = JSON.parse(init.body);
+      const { action, leaseId } = JSON.parse(init.body);
+      if (!leases.has(leaseId)) return new Response("lease missing", { status: 409 });
       if (!state.has(action)) state.set(action, "testagram-" + action + "-" + crypto.randomUUID());
       return Response.json({ ok: true, key: state.get(action) });
     }
-    if (path === "/complete" && init.method === "POST") { state.clear(); return Response.json({ ok: true }); }
+    if (path === "/release" && init.method === "POST") {
+      const { leaseId, completed: success } = JSON.parse(init.body);
+      if (!leases.delete(leaseId)) return new Response("lease missing", { status: 409 });
+      if (success === true) completed = true;
+      return Response.json({ ok: true });
+    }
     return new Response("Not Found", { status: 404 });
   } };
   const RECOVERY_COORDINATOR = { idFromName: (name) => name, get: () => stub };
   return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, EDGE_RECOVERY_READINESS_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", RECOVERY_COORDINATOR, ...overrides };
 }
-
 function restoreFetch(t) {
   const original = globalThis.fetch;
   t.after(() => { globalThis.fetch = original; });
@@ -1233,7 +1246,7 @@ test("recovers an ambiguous lost wake response by following the provider's exist
   assert.equal(await second.text(), "feed restored");
   assert.equal(acceptedOperations, 1, "the simulated provider accepted exactly one lifecycle operation");
   assert.equal(wakeCalls, 2, "the retry discovers the existing operation through the provider conflict response");
-  assert.equal(wakeKeys[0], wakeKeys[1], "each inbound request currently has a fresh provider idempotency key");
+  assert.equal(wakeKeys[0], wakeKeys[1], "independent inbound retries reuse the same durable provider idempotency key");
   assert.equal(operationReads, 1, "the retry follows the original provider operation");
   assert.equal(readinessCalls, 1, "the origin retry waits for application readiness");
   assert.equal(originCalls, 3);
@@ -1321,20 +1334,48 @@ test("Wrangler binds the durable recovery coordinator and declares its SQLite mi
 });
 
 // The recovery epoch is a durable provider-idempotency boundary, not a request cache.
-test("Durable Object retains lifecycle keys across retries and rotates them only after completion", async () => {
+test("Durable Object retains keys while concurrent recovery leases exist and rotates only after all successful leases release", async () => {
   const values = new Map();
   const storage = {
-    async transaction(callback) { return callback({ get: async (key) => values.get(key), put: async (key, value) => values.set(key, structuredClone(value)) }); },
-    async delete(key) { values.delete(key); },
+    async transaction(callback) {
+      return callback({
+        get: async (key) => values.has(key) ? structuredClone(values.get(key)) : undefined,
+        put: async (key, value) => values.set(key, structuredClone(value)),
+      });
+    },
   };
   const coordinator = new RecoveryCoordinator({ storage });
-  const keyRequest = (action) => new Request("https://recovery-coordinator/key", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
-  const first = await (await coordinator.fetch(keyRequest("wake"))).json();
-  const retry = await (await coordinator.fetch(keyRequest("wake"))).json();
-  const start = await (await coordinator.fetch(keyRequest("start"))).json();
-  assert.equal(first.key, retry.key);
-  assert.notEqual(first.key, start.key);
-  await coordinator.fetch(new Request("https://recovery-coordinator/complete", { method: "POST" }));
-  const nextEpoch = await (await coordinator.fetch(keyRequest("wake"))).json();
-  assert.notEqual(first.key, nextEpoch.key);
+  const request = (path, body) => new Request("https://recovery-coordinator" + path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const acquire = async () => (await coordinator.fetch(request("/acquire"))).json();
+  const key = async (action, leaseId) => {
+    const response = await coordinator.fetch(request("/key", { action, leaseId }));
+    assert.equal(response.status, 200);
+    return (await response.json()).key;
+  };
+  const release = (leaseId, completed) =>
+    coordinator.fetch(request("/release", { leaseId, completed }));
+
+  const firstLease = await acquire();
+  const concurrentLease = await acquire();
+  const firstWakeKey = await key("wake", firstLease.leaseId);
+  const retryWakeKey = await key("wake", concurrentLease.leaseId);
+  const firstStartKey = await key("start", firstLease.leaseId);
+  assert.equal(firstWakeKey, retryWakeKey, "concurrent requests share one wake idempotency key");
+  assert.notEqual(firstWakeKey, firstStartKey, "wake and start have distinct keys");
+
+  await release(firstLease.leaseId, true);
+  const thirdLease = await acquire();
+  const stillSameEpoch = await key("wake", thirdLease.leaseId);
+  assert.equal(firstWakeKey, stillSameEpoch, "completion cannot rotate keys while another lease remains active");
+
+  await release(concurrentLease.leaseId, false);
+  await release(thirdLease.leaseId, true);
+  const nextEpochLease = await acquire();
+  const nextEpochKey = await key("wake", nextEpochLease.leaseId);
+  assert.notEqual(firstWakeKey, nextEpochKey, "a new epoch begins after all leases finish and recovery was confirmed");
+  await release(nextEpochLease.leaseId, false);
 });
