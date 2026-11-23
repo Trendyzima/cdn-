@@ -543,6 +543,7 @@ export default {
         return recoveryUnavailable("application_not_ready", application.retryAfter, request);
       }
       if (!replaySafe) {
+        if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
         return recoveryUnavailable("machine_awake_retry_required", null, request);
       }
       try {
