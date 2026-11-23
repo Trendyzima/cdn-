@@ -525,7 +525,14 @@ export default {
     let upstreamResponse;
     try {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
-      if ([502, 503, 504].includes(upstreamResponse.status)) {
+      // The Backend instruments every application response with
+      // X-Request-ID. A 503 carrying that header is a real application
+      // response, not evidence that the provider machine is asleep.
+      // Only uncorrelated gateway failures may initiate lifecycle recovery.
+      const providerUnavailable =
+        [502, 503, 504].includes(upstreamResponse.status) &&
+        !upstreamResponse.headers.has("x-request-id");
+      if (providerUnavailable) {
         try { await upstreamResponse.body?.cancel(); } catch {}
         const provider = await wakeMachine(env);
         if (!provider.ready) {
