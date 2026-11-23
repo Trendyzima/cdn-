@@ -13,7 +13,7 @@ function env(overrides = {}) {
     const path = new URL(url).pathname;
     if (path === "/key" && init.method === "POST") {
       const { action } = JSON.parse(init.body);
-      if (!state.has(action)) state.set(action, "testagram-" + action + "-test-epoch");
+      if (!state.has(action)) state.set(action, "testagram-" + action + "-" + crypto.randomUUID());
       return Response.json({ ok: true, key: state.get(action) });
     }
     if (path === "/complete" && init.method === "POST") { state.clear(); return Response.json({ ok: true }); }
