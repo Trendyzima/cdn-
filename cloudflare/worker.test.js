@@ -389,6 +389,39 @@ test("protocol-relative paths cannot escape the configured origin", async (t) =>
   assert.equal(new URL(upstream.url).search, "?x=1");
 });
 
+test("does not start a second provider operation when the safe retry transport fails", async (t) => {
+  restoreFetch(t);
+  let wakeCalls = 0;
+  let readinessCalls = 0;
+  let originCalls = 0;
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === apiOrigin + "/api/social/feed") {
+      originCalls += 1;
+      if (originCalls === 1) return new Response("gateway unavailable", { status: 502 });
+      throw new Error("retry transport failed");
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return Response.json({ id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      readinessCalls += 1;
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+  const response = await worker.fetch(
+    new Request("https://api.testagram.site/api/social/feed"),
+    env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }),
+  );
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "machine_waking_or_unavailable");
+  assert.equal(originCalls, 2);
+  assert.equal(wakeCalls, 1, "one inbound request may initiate only one provider lifecycle operation");
+  assert.equal(readinessCalls, 1);
+});
+
 test("does not wake the provider for an application-generated 503 with a Backend request ID", async (t) => {
   restoreFetch(t);
   let wakeCalls = 0;
