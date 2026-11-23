@@ -656,8 +656,8 @@ test("wakes a stopped VPS on login but never replays the credential-bearing POST
   }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error, "machine_awake_retry_required");
-  assert.equal(response.headers.get("x-testagram-recovery"), "attempted");
+  assert.equal((await response.json()).error, "application_ready_retry_required");
+  assert.equal(response.headers.get("x-testagram-recovery"), "ready");
   assert.equal(startCalls, 1);
   assert.equal(originCalls, 1);
 });
@@ -693,7 +693,7 @@ test("keeps login intent pending until provider and PostgreSQL readiness are ind
   }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
 
   assert.equal(response.status, 503);
-  assert.equal((await response.json()).error, "machine_awake_retry_required");
+  assert.equal((await response.json()).error, "application_ready_retry_required");
   assert.equal(response.headers.get("x-testagram-recovery"), "ready");
   assert.equal(wakeCalls, 1);
   assert.equal(readinessCalls, 3);
