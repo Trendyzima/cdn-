@@ -523,57 +523,56 @@ export default {
       (["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.headers.get("upgrade")) ||
       idempotentPostCreate;
     let upstreamResponse;
+    let originTransportFailed = false;
     try {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
-      // The Backend instruments every application response with
-      // X-Request-ID. A 503 carrying that header is a real application
-      // response, not evidence that the provider machine is asleep.
-      // Only uncorrelated gateway failures may initiate lifecycle recovery.
-      const providerUnavailable =
-        [502, 503, 504].includes(upstreamResponse.status) &&
-        !upstreamResponse.headers.has("x-request-id");
-      if (providerUnavailable) {
-        try { await upstreamResponse.body?.cancel(); } catch {}
-        const provider = await wakeMachine(env);
-        if (!provider.ready) {
-          return recoveryUnavailable("machine_wake_failed", provider.retryAfter, request);
-        }
-        const application = await waitForApplicationReadiness(env, provider.retryAfter);
-        if (!application.ready) {
-          return recoveryUnavailable("application_not_ready", application.retryAfter, request);
-        }
-        if (!replaySafe) {
-          if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
-          return recoveryUnavailable("machine_awake_retry_required", null, request);
-        }
-        upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
-        if ([502, 503, 504].includes(upstreamResponse.status)) {
-          try { await upstreamResponse.body?.cancel(); } catch {}
-          return recoveryUnavailable("machine_waking_or_unavailable", null, request);
-        }
-      }
     } catch {
       // A transport exception is ambiguous: the origin may have processed a
-      // mutation before the connection failed. Never replay a credential POST
-      // from this path; the user can retry after the readiness marker appears.
+      // mutation before the connection failed. Recovery may wake the provider,
+      // but only the explicit replay-safe contract permits replay.
+      originTransportFailed = true;
+    }
+
+    const originGatewayFailure =
+      !originTransportFailed &&
+      [502, 503, 504].includes(upstreamResponse.status) &&
+      !upstreamResponse.headers.has("x-request-id");
+
+    if (originTransportFailed || originGatewayFailure) {
+      if (upstreamResponse) {
+        try { await upstreamResponse.body?.cancel(); } catch {}
+      }
       const provider = await wakeMachine(env);
       if (!provider.ready) {
         return recoveryUnavailable("machine_wake_failed", provider.retryAfter, request);
       }
+
+      // Provider runtime readiness is not application readiness. Wait for the
+      // separately authenticated Backend capability, which checks PostgreSQL.
       const application = await waitForApplicationReadiness(env, provider.retryAfter);
       if (!application.ready) {
         return recoveryUnavailable("application_not_ready", application.retryAfter, request);
       }
+
       if (!replaySafe) {
-        if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
+        if (request.method === "POST" && incoming.pathname === "/api/auth/login") {
+          return loginRetryReady(request);
+        }
         return recoveryUnavailable("machine_awake_retry_required", null, request);
       }
+
       try {
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
       } catch {
+        // Do not re-enter the lifecycle recovery branch: one request may start
+        // or follow only one provider operation.
         return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }
-      if ([502, 503, 504].includes(upstreamResponse.status)) {
+
+      const retryIsGatewayFailure =
+        [502, 503, 504].includes(upstreamResponse.status) &&
+        !upstreamResponse.headers.has("x-request-id");
+      if (retryIsGatewayFailure) {
         try { await upstreamResponse.body?.cancel(); } catch {}
         return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }
