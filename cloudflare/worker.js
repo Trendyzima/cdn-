@@ -176,6 +176,9 @@ function makeUpstreamRequest(source, target, incoming) {
     "x-forwarded-port",
     "x-real-ip",
     "cf-connecting-ip",
+    // This response-identity header is server-owned; never accept a client
+    // copy that could suppress recovery when the provider origin is down.
+    "x-testagram-service",
   ]) {
     headers.delete(name);
   }
@@ -538,7 +541,7 @@ export default {
     const originGatewayFailure =
       !originTransportFailed &&
       [502, 503, 504].includes(upstreamResponse.status) &&
-      !upstreamResponse.headers.has("x-request-id");
+      upstreamResponse.headers.get("x-testagram-service") !== "testagram-api";
 
     if (originTransportFailed || originGatewayFailure) {
       if (upstreamResponse) {
@@ -573,7 +576,7 @@ export default {
 
       const retryIsGatewayFailure =
         [502, 503, 504].includes(upstreamResponse.status) &&
-        !upstreamResponse.headers.has("x-request-id");
+        upstreamResponse.headers.get("x-testagram-service") !== "testagram-api";
       if (retryIsGatewayFailure) {
         try { await upstreamResponse.body?.cancel(); } catch {}
         return recoveryUnavailable("machine_waking_or_unavailable", null, request);
