@@ -350,6 +350,59 @@ async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) 
   return { ready: readyMachine(finalMachine, machineId), retryAfter: null };
 }
 
+async function waitForApplicationReadiness(env, retryAfter = null) {
+  const rawOrigin = typeof env.API_ORIGIN === "string" ? env.API_ORIGIN : "";
+  const token = typeof env.EDGE_RECOVERY_READINESS_TOKEN === "string"
+    ? env.EDGE_RECOVERY_READINESS_TOKEN
+    : "";
+  if (!rawOrigin || token.length < 64) return { ready: false, retryAfter };
+
+  let readinessUrl;
+  try {
+    const origin = configuredOrigin(rawOrigin, "api.testagram.site");
+    readinessUrl = new URL("/internal/edge/recovery-ready", origin);
+  } catch {
+    return { ready: false, retryAfter };
+  }
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const response = await fetch(readinessUrl.toString(), {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/json",
+          "Cache-Control": "no-store",
+        },
+      });
+      if (response.status === 200) {
+        const body = await providerJson(response);
+        if (body?.ok === true && body?.ready === true && body?.service === "testagram-api") {
+          return { ready: true, retryAfter: null };
+        }
+        return { ready: false, retryAfter };
+      }
+      // A missing/invalid edge capability is a configuration fault, not a
+      // reason to keep polling or to replay the user's original request.
+      if (response.status === 404 || response.status === 401 || response.status === 403) {
+        return { ready: false, retryAfter };
+      }
+    } catch {
+      // The API process may still be starting; keep the bounded probe alive.
+    }
+    if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return { ready: false, retryAfter: retryAfter ?? 5 };
+}
+
+function loginRetryReady(request) {
+  const response = json({ ok: false, error: "machine_awake_retry_required" }, 503);
+  const headers = new Headers(response.headers);
+  headers.set("retry-after", "1");
+  headers.set("x-testagram-recovery", "ready");
+  return exposeRecoveryHeaders(new Response(response.body, { status: 503, headers }), request);
+}
+
 async function wakeMachine(env) {
   const machineId = typeof env.MACHINE_ID === "string" ? env.MACHINE_ID.trim() : "";
   const apiKey = typeof env.INSTABOX_API_KEY === "string" ? env.INSTABOX_API_KEY : "";
@@ -461,8 +514,13 @@ export default {
         try { await upstreamResponse.body?.cancel(); } catch {}
         const wake = await wakeMachine(env);
       if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
-      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
-        upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
+      const application = await waitForApplicationReadiness(env, wake.retryAfter);
+      if (!application.ready) return recoveryUnavailable("application_not_ready", application.retryAfter, request);
+      if (!replaySafe) {
+        if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
+        return recoveryUnavailable("machine_awake_retry_required", null, request);
+      }
+      upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
           try { await upstreamResponse.body?.cancel(); } catch {}
           return recoveryUnavailable("machine_waking_or_unavailable", null, request);
@@ -471,7 +529,12 @@ export default {
     } catch {
       const wake = await wakeMachine(env);
       if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
-      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
+      const application = await waitForApplicationReadiness(env, wake.retryAfter);
+      if (!application.ready) return recoveryUnavailable("application_not_ready", application.retryAfter, request);
+      if (!replaySafe) {
+        if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
+        return recoveryUnavailable("machine_awake_retry_required", null, request);
+      }
       try {
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
       } catch {
