@@ -508,31 +508,50 @@ export default {
       (["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.headers.get("upgrade")) ||
       idempotentPostCreate;
     let upstreamResponse;
+    let loginRetryEligible = false;
     try {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
       if ([502, 503, 504].includes(upstreamResponse.status)) {
+        // Only a gateway timeout/bad-gateway response without a Backend
+        // request ID proves the credential-bearing login did not receive an
+        // application response. A Backend 503 is never automatically replayed.
+        loginRetryEligible =
+          request.method === "POST" &&
+          incoming.pathname === "/api/auth/login" &&
+          [502, 504].includes(upstreamResponse.status) &&
+          !upstreamResponse.headers.has("x-request-id");
         try { await upstreamResponse.body?.cancel(); } catch {}
-        const wake = await wakeMachine(env);
-      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
-      const application = await waitForApplicationReadiness(env, wake.retryAfter);
-      if (!application.ready) return recoveryUnavailable("application_not_ready", application.retryAfter, request);
-      if (!replaySafe) {
-        if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
-        return recoveryUnavailable("machine_awake_retry_required", null, request);
-      }
-      upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
+        const provider = await wakeMachine(env);
+        if (!provider.ready) {
+          return recoveryUnavailable("machine_wake_failed", provider.retryAfter, request);
+        }
+        const application = await waitForApplicationReadiness(env, provider.retryAfter);
+        if (!application.ready) {
+          return recoveryUnavailable("application_not_ready", application.retryAfter, request);
+        }
+        if (!replaySafe) {
+          if (loginRetryEligible) return loginRetryReady(request);
+          return recoveryUnavailable("machine_awake_retry_required", null, request);
+        }
+        upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
         if ([502, 503, 504].includes(upstreamResponse.status)) {
           try { await upstreamResponse.body?.cancel(); } catch {}
           return recoveryUnavailable("machine_waking_or_unavailable", null, request);
         }
       }
     } catch {
-      const wake = await wakeMachine(env);
-      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
-      const application = await waitForApplicationReadiness(env, wake.retryAfter);
-      if (!application.ready) return recoveryUnavailable("application_not_ready", application.retryAfter, request);
+      // A transport exception is ambiguous: the origin may have processed a
+      // mutation before the connection failed. Never replay a credential POST
+      // from this path; the user can retry after the readiness marker appears.
+      const provider = await wakeMachine(env);
+      if (!provider.ready) {
+        return recoveryUnavailable("machine_wake_failed", provider.retryAfter, request);
+      }
+      const application = await waitForApplicationReadiness(env, provider.retryAfter);
+      if (!application.ready) {
+        return recoveryUnavailable("application_not_ready", application.retryAfter, request);
+      }
       if (!replaySafe) {
-        if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
         return recoveryUnavailable("machine_awake_retry_required", null, request);
       }
       try {
