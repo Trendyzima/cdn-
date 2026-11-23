@@ -238,23 +238,31 @@ function readyMachine(machine, machineId) {
     (machine?.desiredState === undefined || machine.desiredState === "running");
 }
 
+async function waitForMachineReady(machineUrl, auth, machineId, retryAfter) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await fetch(machineUrl, { headers: auth });
+    if (!response.ok) {
+      return { ready: false, retryAfter: retryAfterSeconds(response.headers) ?? retryAfter };
+    }
+    const machine = providerObject(await providerJson(response), "machine");
+    if (String(machine?.id || "") !== machineId) return { ready: false, retryAfter };
+    if (readyMachine(machine, machineId)) return { ready: true, retryAfter: null };
+    // A provider-side manual stop is operator intent. Do not reverse it.
+    if (machine?.desiredState === "stopped") return { ready: false, retryAfter };
+    if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return { ready: false, retryAfter: retryAfter ?? 5 };
+}
+
 async function verifyReadyMachine(candidate, machineUrl, auth, machineId, retryAfter) {
   if (candidate?.id && String(candidate.id) !== machineId) {
     return { ready: false, retryAfter };
   }
   if (readyMachine(candidate, machineId)) return { ready: true, retryAfter: null };
-
-  // Some provider operation responses omit the machine ID. In that case,
-  // never infer identity from state alone: read the exact machine URL again.
-  if (!candidate?.id && candidate?.state === "running" && candidate?.runtime?.ready === true) {
-    const current = await fetch(machineUrl, { headers: auth });
-    if (!current.ok) {
-      return { ready: false, retryAfter: retryAfterSeconds(current.headers) ?? retryAfter };
-    }
-    const machine = providerObject(await providerJson(current), "machine");
-    return { ready: readyMachine(machine, machineId), retryAfter: null };
-  }
-  return { ready: false, retryAfter };
+  // An accepted wake or completed lifecycle operation can precede the final
+  // runtime-ready snapshot. Re-read the exact machine instead of treating
+  // provider acceptance as readiness.
+  return waitForMachineReady(machineUrl, auth, machineId, retryAfter);
 }
 
 async function waitForLifecycleOperation(operationId, machineUrl, auth, machineId, retryAfter) {
@@ -427,7 +435,14 @@ async function wakeMachine(env) {
       body: "{}",
     });
     if (wake.ok) {
-      const machine = providerObject(await providerJson(wake), "machine");
+      const payload = await providerJson(wake);
+      const operation = providerObject(payload, "operation");
+      if (typeof operation?.id === "string" &&
+          ["start", "resume"].includes(operation?.type) &&
+          ["queued", "running", "succeeded"].includes(operation?.state)) {
+        return waitForLifecycleOperation(operation.id, machineUrl, auth, machineId, null);
+      }
+      const machine = providerObject(payload, "machine");
       return verifyReadyMachine(machine, machineUrl, auth, machineId, null);
     }
 
