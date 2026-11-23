@@ -1118,11 +1118,13 @@ test("canonical production cutover verifies real public federation contracts aft
   assert.match(workflow, /Remove the exact stale WebFinger route from Flutter Pages Worker/);
   assert.match(workflow, /conflicting WebFinger route remains after deletion/);
   const secretIndex = workflow.indexOf("Store the InstaBox and application-readiness credentials as Worker secrets");
+  const readinessPreflightIndex = workflow.indexOf("Verify the shared application-readiness capability before hostname cutover");
   const r2ReleaseIndex = workflow.indexOf("Release the existing R2 custom-domain binding for Go CDN ownership");
   const apiDNSReleaseIndex = workflow.indexOf("Release only api.testagram.site DNS records for the custom-domain handoff");
   const deployIndex = workflow.indexOf("Deploy Worker gateway on canonical API, media, www and apex hostnames");
   const removeIndex = workflow.indexOf("Remove the exact stale WebFinger route from Flutter Pages Worker");
   const verifyIndex = workflow.indexOf("Verify canonical API, Go CDN, Flutter web and apex identities");
-  assert.ok(secretIndex < r2ReleaseIndex && r2ReleaseIndex < apiDNSReleaseIndex, "validate and install recovery credentials before any destructive hostname/DNS change");
+  assert.ok(secretIndex < readinessPreflightIndex && readinessPreflightIndex < r2ReleaseIndex && r2ReleaseIndex < apiDNSReleaseIndex, "verify the shared readiness capability before any destructive hostname/DNS change");
+  assert.ok(workflow.includes('"$API_ORIGIN/internal/edge/recovery-ready"'));
   assert.ok(deployIndex < removeIndex && removeIndex < verifyIndex);
 });
