@@ -289,6 +289,7 @@ async function waitForLifecycleOperation(operationId, machineUrl, auth, machineI
         retryAfter: Number.isSafeInteger(operationRetry) && operationRetry > 0
           ? Math.min(operationRetry, 86400)
           : retryAfter,
+        retireEpoch: true,
       };
     }
     if (operation.state === "succeeded") {
@@ -335,7 +336,7 @@ async function lifecycleIdempotencyKey(env, machineId, action, leaseId) {
   return body.key;
 }
 
-async function completeLifecycleRecovery(env, machineId, leaseId, completed) {
+async function completeLifecycleRecovery(env, machineId, leaseId, retireEpoch) {
   const namespace = env.RECOVERY_COORDINATOR;
   if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
     throw new Error("recovery_coordinator_unavailable");
@@ -344,7 +345,7 @@ async function completeLifecycleRecovery(env, machineId, leaseId, completed) {
   const response = await stub.fetch("https://recovery-coordinator/release", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ leaseId, completed: completed === true }),
+    body: JSON.stringify({ leaseId, retireEpoch: retireEpoch === true }),
   });
   if (!response.ok) throw new Error("recovery_coordinator_release_failed");
 }
@@ -391,7 +392,11 @@ async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter, 
         return waitForLifecycleOperation(operationId, machineUrl, auth, machineId, startRetryAfter);
       }
     }
-    return { ready: false, retryAfter: startRetryAfter };
+    return {
+      ready: false,
+      retryAfter: startRetryAfter,
+      retireEpoch: [400, 401, 403, 404, 422].includes(start.status),
+    };
   }
 
   const started = providerObject(await providerJson(start), "operation");
@@ -505,7 +510,12 @@ async function wakeMachine(env) {
     if (wake.status === 409 && failure?.error?.code === "machine_not_running") {
       return { ...(await wakeStoppedMachine(env, machineUrl, auth, machineId, wakeRetryAfter, leaseId)), leaseId };
     }
-    return { ready: false, retryAfter: wakeRetryAfter, leaseId };
+    return {
+      ready: false,
+      retryAfter: wakeRetryAfter,
+      leaseId,
+      retireEpoch: wake.status >= 400 && wake.status < 500 && ![408, 409, 425, 429].includes(wake.status),
+    };
   } catch {
     if (leaseId) await completeLifecycleRecovery(env, machineId, leaseId, false).catch(() => {});
     return { ready: false, retryAfter: null };
@@ -597,7 +607,7 @@ export default {
       const provider = await wakeMachine(env);
       if (!provider.ready) {
         if (provider.leaseId) {
-          await completeLifecycleRecovery(env, String(env.MACHINE_ID || "").trim(), provider.leaseId, false).catch(() => {});
+          await completeLifecycleRecovery(env, String(env.MACHINE_ID || "").trim(), provider.leaseId, provider.retireEpoch === true).catch(() => {});
         }
         return recoveryUnavailable("machine_wake_failed", provider.retryAfter, request);
       }
@@ -686,13 +696,13 @@ export class RecoveryCoordinator {
       const leaseId = crypto.randomUUID();
       const epoch = await this.ctx.storage.transaction(async (txn) => {
         let state = await txn.get("recovery-epoch");
-        if (!state) state = { epoch: crypto.randomUUID(), keys: {}, leases: {}, completed: false };
+        if (!state) state = { epoch: crypto.randomUUID(), keys: {}, leases: {}, retireWhenIdle: false };
         state.leases ||= {};
         for (const [id, expiry] of Object.entries(state.leases)) {
           if (!Number.isFinite(expiry) || expiry <= now) delete state.leases[id];
         }
-        if (state.completed && Object.keys(state.leases).length === 0) {
-          state = { epoch: crypto.randomUUID(), keys: {}, leases: {}, completed: false };
+        if (state.retireWhenIdle && Object.keys(state.leases).length === 0) {
+          state = { epoch: crypto.randomUUID(), keys: {}, leases: {}, retireWhenIdle: false };
         }
         state.leases[leaseId] = now + leaseTtlMs;
         await txn.put("recovery-epoch", state);
@@ -730,7 +740,7 @@ export class RecoveryCoordinator {
         const state = await txn.get("recovery-epoch");
         if (!state?.leases?.[body.leaseId]) return false;
         delete state.leases[body.leaseId];
-        if (body.completed === true) state.completed = true;
+        if (body.retireEpoch === true) state.retireWhenIdle = true;
         await txn.put("recovery-epoch", state);
         return true;
       });
