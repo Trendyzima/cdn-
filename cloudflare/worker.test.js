@@ -1226,3 +1226,74 @@ test("recovers an ambiguous lost wake response by following the provider's exist
   assert.equal(readinessCalls, 1, "the origin retry waits for application readiness");
   assert.equal(originCalls, 3);
 });
+
+
+test("recovers a lost stopped-machine start response by following the operation on the next inbound retry", async (t) => {
+  restoreFetch(t);
+  let wakeCalls = 0;
+  let machineReads = 0;
+  let startCalls = 0;
+  let operationReads = 0;
+  let originCalls = 0;
+  let readinessCalls = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    const method = typeof request === "string" ? (init.method || "GET") : request.method;
+
+    if (url === apiOrigin + "/api/social/feed") {
+      originCalls += 1;
+      if (originCalls <= 2) return new Response("origin still unavailable", { status: 503 });
+      return new Response("feed restored after start", { status: 200 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return Response.json({ error: { code: "machine_not_running" } }, { status: 409 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123" && method === "GET") {
+      machineReads += 1;
+      return Response.json({ machine: {
+        id: "m_test123",
+        state: "stopped",
+        desiredState: "running",
+        operationId: machineReads === 1 ? null : "accepted-start-op",
+      } });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/start" && method === "POST") {
+      startCalls += 1;
+      throw new Error("simulated lost start response after provider accepted operation");
+    }
+    if (url === "https://api.instabox.sh/v1/operations/accepted-start-op") {
+      operationReads += 1;
+      return Response.json({ operation: {
+        id: "accepted-start-op",
+        type: "start",
+        state: "succeeded",
+        machine: {
+          id: "m_test123",
+          state: "running",
+          desiredState: "running",
+          runtime: { ready: true },
+        },
+      } });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      readinessCalls += 1;
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    throw new Error("unexpected fetch: " + method + " " + url);
+  };
+
+  const workerEnv = env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" });
+  const first = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(first.status, 503);
+
+  const second = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(second.status, 200);
+  assert.equal(await second.text(), "feed restored after start");
+  assert.equal(wakeCalls, 2);
+  assert.equal(machineReads, 2);
+  assert.equal(startCalls, 1, "the retry must follow the provider's active operation rather than POST /start again");
+  assert.equal(operationReads, 1);
+  assert.equal(readinessCalls, 1);
+  assert.equal(originCalls, 3);
+});
