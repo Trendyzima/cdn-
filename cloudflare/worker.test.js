@@ -8,7 +8,7 @@ const cdnOrigin = "https://machine-cdn.instabox.sh";
 const apexOrigin = "https://machine-apex.instabox.sh";
 
 function env(overrides = {}) {
-  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, EDGE_RECOVERY_READINESS_TOKEN: "test-edge-recovery-token-0123456789abcdef0123456789abcdef0123456789abcdef", ...overrides };
+  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, EDGE_RECOVERY_READINESS_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", ...overrides };
 }
 
 function restoreFetch(t) {
@@ -808,7 +808,7 @@ test("keeps login intent pending until provider and PostgreSQL readiness are ind
     }
     if (url === apiOrigin + "/internal/edge/recovery-ready") {
       readinessCalls += 1;
-      assert.equal(new Headers(init.headers).get("authorization"), "Bearer test-edge-recovery-token-0123456789abcdef0123456789abcdef0123456789abcdef");
+      assert.equal(new Headers(init.headers).get("authorization"), "Bearer 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
       if (readinessCalls < 3) return new Response("not ready", { status: 503 });
       return Response.json({ ok: true, ready: true, service: "testagram-api" });
     }
