@@ -1,16 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "./worker.js";
+import worker, { RecoveryCoordinator } from "./worker.js";
 
 const apiOrigin = "https://machine-api.instabox.sh";
 const cdnOrigin = "https://machine-cdn.instabox.sh";
 const apexOrigin = "https://machine-apex.instabox.sh";
 
 function env(overrides = {}) {
-  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, EDGE_RECOVERY_READINESS_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", ...overrides };
+  const state = new Map();
+  const leases = new Set();
+  let retireWhenIdle = false;
+  const stub = { async fetch(url, init = {}) {
+    const path = new URL(url).pathname;
+    if (path === "/acquire" && init.method === "POST") {
+      if (retireWhenIdle && leases.size === 0) { state.clear(); retireWhenIdle = false; }
+      const leaseId = "lease-" + crypto.randomUUID();
+      leases.add(leaseId);
+      return Response.json({ ok: true, leaseId });
+    }
+    if (path === "/key" && init.method === "POST") {
+      const { action, leaseId } = JSON.parse(init.body);
+      if (!leases.has(leaseId)) return new Response("lease missing", { status: 409 });
+      if (!state.has(action)) state.set(action, "testagram-" + action + "-" + crypto.randomUUID());
+      return Response.json({ ok: true, key: state.get(action) });
+    }
+    if (path === "/release" && init.method === "POST") {
+      const { leaseId, retireEpoch } = JSON.parse(init.body);
+      if (!leases.delete(leaseId)) return new Response("lease missing", { status: 409 });
+      if (retireEpoch === true) retireWhenIdle = true;
+      return Response.json({ ok: true });
+    }
+    return new Response("Not Found", { status: 404 });
+  } };
+  const RECOVERY_COORDINATOR = { idFromName: (name) => name, get: () => stub };
+  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, EDGE_RECOVERY_READINESS_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", RECOVERY_COORDINATOR, ...overrides };
 }
-
 function restoreFetch(t) {
   const original = globalThis.fetch;
   t.after(() => { globalThis.fetch = original; });
@@ -1157,4 +1182,200 @@ test("canonical production cutover verifies real public federation contracts aft
   assert.ok(secretIndex < readinessPreflightIndex && readinessPreflightIndex < r2ReleaseIndex && r2ReleaseIndex < apiDNSReleaseIndex, "verify the shared readiness capability before any destructive hostname/DNS change");
   assert.ok(workflow.includes('"$API_ORIGIN/internal/edge/recovery-ready"'));
   assert.ok(deployIndex < removeIndex && removeIndex < verifyIndex);
+});
+
+
+test("recovers an ambiguous lost wake response by following the provider's existing operation on the next inbound retry", async (t) => {
+  restoreFetch(t);
+  let acceptedOperations = 0;
+  let wakeCalls = 0;
+  let originCalls = 0;
+  let operationReads = 0;
+  let readinessCalls = 0;
+  const wakeKeys = [];
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    const method = typeof request === "string" ? (init.method || "GET") : request.method;
+    const headers = typeof request === "string" ? new Headers(init.headers) : request.headers;
+
+    if (url === apiOrigin + "/api/social/feed") {
+      originCalls += 1;
+      if (originCalls <= 2) return new Response("origin is still waking", { status: 503 });
+      return new Response("feed restored", { status: 200 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake" && method === "POST") {
+      wakeCalls += 1;
+      wakeKeys.push(headers.get("idempotency-key"));
+      if (wakeCalls === 1) {
+        acceptedOperations += 1;
+        // The provider accepted the lifecycle operation, but its response
+        // was lost. A later inbound request must discover, not duplicate it.
+        throw new Error("simulated response loss after provider acceptance");
+      }
+      return Response.json({
+        error: { code: "operation_conflict", operationId: "accepted-wake-op" },
+      }, { status: 409 });
+    }
+    if (url === "https://api.instabox.sh/v1/operations/accepted-wake-op") {
+      operationReads += 1;
+      return Response.json({
+        id: "accepted-wake-op",
+        type: "resume",
+        state: "succeeded",
+        machine: {
+          id: "m_test123",
+          state: "running",
+          desiredState: "running",
+          runtime: { ready: true },
+        },
+      });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      readinessCalls += 1;
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    throw new Error("unexpected fetch: " + method + " " + url);
+  };
+
+  const workerEnv = env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" });
+  const first = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(first.status, 503);
+
+  const second = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(second.status, 200);
+  assert.equal(await second.text(), "feed restored");
+  assert.equal(acceptedOperations, 1, "the simulated provider accepted exactly one lifecycle operation");
+  assert.equal(wakeCalls, 2, "the retry discovers the existing operation through the provider conflict response");
+  assert.equal(wakeKeys[0], wakeKeys[1], "independent inbound retries reuse the same durable provider idempotency key");
+  assert.equal(operationReads, 1, "the retry follows the original provider operation");
+  assert.equal(readinessCalls, 1, "the origin retry waits for application readiness");
+  assert.equal(originCalls, 3);
+});
+
+
+test("recovers a lost stopped-machine start response by following the operation on the next inbound retry", async (t) => {
+  restoreFetch(t);
+  let wakeCalls = 0;
+  let machineReads = 0;
+  let startCalls = 0;
+  const startKeys = [];
+  let operationReads = 0;
+  let originCalls = 0;
+  let readinessCalls = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    const method = typeof request === "string" ? (init.method || "GET") : request.method;
+
+    if (url === apiOrigin + "/api/social/feed") {
+      originCalls += 1;
+      if (originCalls <= 2) return new Response("origin still unavailable", { status: 503 });
+      return new Response("feed restored after start", { status: 200 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return Response.json({ error: { code: "machine_not_running" } }, { status: 409 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123" && method === "GET") {
+      machineReads += 1;
+      return Response.json({ machine: {
+        id: "m_test123",
+        state: "stopped",
+        desiredState: "running",
+        operationId: machineReads === 1 ? null : "accepted-start-op",
+      } });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/start" && method === "POST") {
+      startCalls += 1;
+      startKeys.push(new Headers(init.headers).get("idempotency-key"));
+      throw new Error("simulated lost start response after provider accepted operation");
+    }
+    if (url === "https://api.instabox.sh/v1/operations/accepted-start-op") {
+      operationReads += 1;
+      return Response.json({ operation: {
+        id: "accepted-start-op",
+        type: "start",
+        state: "succeeded",
+        machine: {
+          id: "m_test123",
+          state: "running",
+          desiredState: "running",
+          runtime: { ready: true },
+        },
+      } });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      readinessCalls += 1;
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    throw new Error("unexpected fetch: " + method + " " + url);
+  };
+
+  const workerEnv = env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" });
+  const first = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(first.status, 503);
+
+  const second = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(second.status, 200);
+  assert.equal(await second.text(), "feed restored after start");
+  assert.equal(wakeCalls, 2);
+  assert.equal(machineReads, 2);
+  assert.equal(startCalls, 1, "the retry must follow the provider's active operation rather than POST /start again");
+  assert.equal(startKeys.length, 1);
+  assert.equal(operationReads, 1);
+  assert.equal(readinessCalls, 1);
+  assert.equal(originCalls, 3);
+});
+
+test("Wrangler binds the durable recovery coordinator and declares its SQLite migration", () => {
+  const config = readFileSync(new URL("./wrangler.toml", import.meta.url), "utf8");
+  assert.match(config, /name = "RECOVERY_COORDINATOR"/);
+  assert.match(config, /class_name = "RecoveryCoordinator"/);
+  assert.match(config, /new_sqlite_classes = \["RecoveryCoordinator"\]/);
+});
+
+// The recovery epoch is a durable provider-idempotency boundary, not a request cache.
+test("Durable Object retains keys while concurrent recovery leases exist and rotates only after all successful leases release", async () => {
+  const values = new Map();
+  const storage = {
+    async transaction(callback) {
+      return callback({
+        get: async (key) => values.has(key) ? structuredClone(values.get(key)) : undefined,
+        put: async (key, value) => values.set(key, structuredClone(value)),
+      });
+    },
+  };
+  const coordinator = new RecoveryCoordinator({ storage });
+  const request = (path, body) => new Request("https://recovery-coordinator" + path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const acquire = async () => (await coordinator.fetch(request("/acquire"))).json();
+  const key = async (action, leaseId) => {
+    const response = await coordinator.fetch(request("/key", { action, leaseId }));
+    assert.equal(response.status, 200);
+    return (await response.json()).key;
+  };
+  const release = (leaseId, retireEpoch) =>
+    coordinator.fetch(request("/release", { leaseId, retireEpoch }));
+
+  const firstLease = await acquire();
+  const concurrentLease = await acquire();
+  const firstWakeKey = await key("wake", firstLease.leaseId);
+  const retryWakeKey = await key("wake", concurrentLease.leaseId);
+  const firstStartKey = await key("start", firstLease.leaseId);
+  assert.equal(firstWakeKey, retryWakeKey, "concurrent requests share one wake idempotency key");
+  assert.notEqual(firstWakeKey, firstStartKey, "wake and start have distinct keys");
+
+  await release(firstLease.leaseId, true);
+  const thirdLease = await acquire();
+  const stillSameEpoch = await key("wake", thirdLease.leaseId);
+  assert.equal(firstWakeKey, stillSameEpoch, "completion cannot rotate keys while another lease remains active");
+
+  await release(concurrentLease.leaseId, false);
+  await release(thirdLease.leaseId, true);
+  const nextEpochLease = await acquire();
+  const nextEpochKey = await key("wake", nextEpochLease.leaseId);
+  assert.notEqual(firstWakeKey, nextEpochKey, "a new epoch begins after all leases finish and recovery was confirmed");
+  await release(nextEpochLease.leaseId, false);
 });
