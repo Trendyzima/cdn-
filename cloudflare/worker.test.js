@@ -409,6 +409,7 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
       throw new Error("wake must never use /start for an idle-suspended machine");
     }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
       if (originCalls === 1) return new Response("machine waking", { status: 503 });
@@ -448,6 +449,7 @@ test("independently verifies machine identity when the wake response omits its I
         runtime: { ready: true },
       } });
     }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
@@ -492,6 +494,7 @@ test("follows the exact concurrent InstaBox resume operation without issuing ano
       throw new Error("must not issue a second start");
     }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
       if (originCalls === 1) return new Response("machine resuming", { status: 503 });
@@ -529,6 +532,7 @@ test("does not override a manually stopped or suspended machine", async (t) => {
       } });
     }
     if (url === "https://api.instabox.sh/v1/machines/m_test123/start") startCalls += 1;
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
@@ -587,6 +591,7 @@ test("starts an unexpectedly stopped VPS only while desiredState remains running
       return Response.json({ operation });
     }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
       if (originCalls === 1) return new Response("machine stopped", { status: 503 });
@@ -636,6 +641,7 @@ test("wakes a stopped VPS on login but never replays the credential-bearing POST
       } });
     }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
       return new Response("machine stopped", { status: 503 });
@@ -656,6 +662,52 @@ test("wakes a stopped VPS on login but never replays the credential-bearing POST
   assert.equal(originCalls, 1);
 });
 
+test("keeps login intent pending until provider and PostgreSQL readiness are independently confirmed", async (t) => {
+  restoreFetch(t);
+  let originCalls = 0;
+  let readinessCalls = 0;
+  let wakeCalls = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      wakeCalls += 1;
+      return Response.json({ id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      readinessCalls += 1;
+      assert.equal(new Headers(init.headers).get("authorization"), "Bearer test-edge-recovery-token-0123456789abcdef0123456789abcdef0123456789abcdef");
+      if (readinessCalls < 3) return new Response("not ready", { status: 503 });
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    if (url === apiOrigin + "/api/auth/login") {
+      originCalls += 1;
+      return new Response("origin gateway timeout", { status: 504 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/api/auth/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "user@example.test", password: "never-log-this" }),
+  }), env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" }));
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error, "machine_awake_retry_required");
+  assert.equal(response.headers.get("x-testagram-recovery"), "ready");
+  assert.equal(wakeCalls, 1);
+  assert.equal(readinessCalls, 3);
+  assert.equal(originCalls, 1, "gateway must not replay credential-bearing login POST");
+});
+
+test("does not expose the edge-only readiness capability through the public API hostname", async () => {
+  const response = await worker.fetch(new Request("https://api.testagram.site/internal/edge/recovery-ready"), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+  assert.equal(response.status, 404);
+});
+
 test("does not replay a non-idempotent POST after waking the machine", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
@@ -668,6 +720,7 @@ test("does not replay a non-idempotent POST after waking the machine", async (t)
       wakeIdempotencyKey = new Headers(init?.headers).get("idempotency-key") ?? "";
       return new Response(JSON.stringify({ id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } }), { status: 200 });
     }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
@@ -696,6 +749,7 @@ test("does not replay unrelated mutations even when they carry an Idempotency-Ke
       wakeCalls += 1;
       return new Response(JSON.stringify({ id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } }), { status: 200 });
     }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
@@ -739,6 +793,7 @@ test("preserves InstaBox max-run cooldown Retry-After for clients", async (t) =>
       });
     }
     if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") { return Response.json({ ok: true, ready: true, service: "testagram-api" }); }
     if (url.startsWith(apiOrigin)) {
       originCalls += 1;
       return new Response("machine paused", { status: 503 });
@@ -777,6 +832,7 @@ test("does not reflect an unapproved origin on machine recovery responses", asyn
         headers: { "retry-after": "30", "content-type": "application/json" },
       });
     }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") return Response.json({ ok: true, ready: true, service: "testagram-api" });
     if (url === apiOrigin + "/internal/edge/recovery-ready") return Response.json({ ok: true, ready: true, service: "testagram-api" });
     if (url.startsWith(apiOrigin)) return new Response("machine paused", { status: 503 });
     throw new Error("unexpected fetch: " + url);
