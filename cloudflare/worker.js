@@ -4,7 +4,7 @@ const HOSTS = Object.freeze({
   "testagram.site": "APEX_ORIGIN",
   "www.testagram.site": "APEX_ORIGIN",
 });
-const PRIVATE_API_PATHS = new Set(["/readyz", "/metrics"]);
+const PRIVATE_API_PATHS = new Set(["/readyz", "/metrics", "/internal/edge/recovery-ready"]);
 const PRIVATE_MEDIA_PATHS = new Set(["/readyz", "/metrics"]);
 
 function json(body, status = 200) {
@@ -176,6 +176,9 @@ function makeUpstreamRequest(source, target, incoming) {
     "x-forwarded-port",
     "x-real-ip",
     "cf-connecting-ip",
+    // This response-identity header is server-owned; never accept a client
+    // copy that could suppress recovery when the provider origin is down.
+    "x-testagram-service",
   ]) {
     headers.delete(name);
   }
@@ -238,23 +241,31 @@ function readyMachine(machine, machineId) {
     (machine?.desiredState === undefined || machine.desiredState === "running");
 }
 
+async function waitForMachineReady(machineUrl, auth, machineId, retryAfter) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await fetch(machineUrl, { headers: auth });
+    if (!response.ok) {
+      return { ready: false, retryAfter: retryAfterSeconds(response.headers) ?? retryAfter };
+    }
+    const machine = providerObject(await providerJson(response), "machine");
+    if (String(machine?.id || "") !== machineId) return { ready: false, retryAfter };
+    if (readyMachine(machine, machineId)) return { ready: true, retryAfter: null };
+    // A provider-side manual stop is operator intent. Do not reverse it.
+    if (machine?.desiredState === "stopped") return { ready: false, retryAfter };
+    if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return { ready: false, retryAfter: retryAfter ?? 5 };
+}
+
 async function verifyReadyMachine(candidate, machineUrl, auth, machineId, retryAfter) {
   if (candidate?.id && String(candidate.id) !== machineId) {
     return { ready: false, retryAfter };
   }
   if (readyMachine(candidate, machineId)) return { ready: true, retryAfter: null };
-
-  // Some provider operation responses omit the machine ID. In that case,
-  // never infer identity from state alone: read the exact machine URL again.
-  if (!candidate?.id && candidate?.state === "running" && candidate?.runtime?.ready === true) {
-    const current = await fetch(machineUrl, { headers: auth });
-    if (!current.ok) {
-      return { ready: false, retryAfter: retryAfterSeconds(current.headers) ?? retryAfter };
-    }
-    const machine = providerObject(await providerJson(current), "machine");
-    return { ready: readyMachine(machine, machineId), retryAfter: null };
-  }
-  return { ready: false, retryAfter };
+  // An accepted wake or completed lifecycle operation can precede the final
+  // runtime-ready snapshot. Re-read the exact machine instead of treating
+  // provider acceptance as readiness.
+  return waitForMachineReady(machineUrl, auth, machineId, retryAfter);
 }
 
 async function waitForLifecycleOperation(operationId, machineUrl, auth, machineId, retryAfter) {
@@ -350,6 +361,59 @@ async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) 
   return { ready: readyMachine(finalMachine, machineId), retryAfter: null };
 }
 
+async function waitForApplicationReadiness(env, retryAfter = null) {
+  const rawOrigin = typeof env.API_ORIGIN === "string" ? env.API_ORIGIN : "";
+  const token = typeof env.EDGE_RECOVERY_READINESS_TOKEN === "string"
+    ? env.EDGE_RECOVERY_READINESS_TOKEN
+    : "";
+  if (!rawOrigin || !/^[A-Fa-f0-9]{64}$/.test(token)) return { ready: false, retryAfter };
+
+  let readinessUrl;
+  try {
+    const origin = configuredOrigin(rawOrigin, "api.testagram.site");
+    readinessUrl = new URL("/internal/edge/recovery-ready", origin);
+  } catch {
+    return { ready: false, retryAfter };
+  }
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const response = await fetch(readinessUrl.toString(), {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Accept": "application/json",
+          "Cache-Control": "no-store",
+        },
+      });
+      if (response.status === 200) {
+        const body = await providerJson(response);
+        if (body?.ok === true && body?.ready === true && body?.service === "testagram-api") {
+          return { ready: true, retryAfter: null };
+        }
+        return { ready: false, retryAfter };
+      }
+      // A missing/invalid edge capability is a configuration fault, not a
+      // reason to keep polling or to replay the user's original request.
+      if (response.status === 404 || response.status === 401 || response.status === 403) {
+        return { ready: false, retryAfter };
+      }
+    } catch {
+      // The API process may still be starting; keep the bounded probe alive.
+    }
+    if (attempt < 19) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return { ready: false, retryAfter: retryAfter ?? 5 };
+}
+
+function loginRetryReady(request) {
+  const response = json({ ok: false, error: "application_ready_retry_required" }, 503);
+  const headers = new Headers(response.headers);
+  headers.set("retry-after", "1");
+  headers.set("x-testagram-recovery", "ready");
+  return exposeRecoveryHeaders(new Response(response.body, { status: 503, headers }), request);
+}
+
 async function wakeMachine(env) {
   const machineId = typeof env.MACHINE_ID === "string" ? env.MACHINE_ID.trim() : "";
   const apiKey = typeof env.INSTABOX_API_KEY === "string" ? env.INSTABOX_API_KEY : "";
@@ -374,7 +438,14 @@ async function wakeMachine(env) {
       body: "{}",
     });
     if (wake.ok) {
-      const machine = providerObject(await providerJson(wake), "machine");
+      const payload = await providerJson(wake);
+      const operation = providerObject(payload, "operation");
+      if (typeof operation?.id === "string" &&
+          ["start", "resume"].includes(operation?.type) &&
+          ["queued", "running", "succeeded"].includes(operation?.state)) {
+        return waitForLifecycleOperation(operation.id, machineUrl, auth, machineId, null);
+      }
+      const machine = providerObject(payload, "machine");
       return verifyReadyMachine(machine, machineUrl, auth, machineId, null);
     }
 
@@ -443,7 +514,6 @@ export default {
     const target = new URL(origin.toString());
     target.pathname = incoming.pathname;
     target.search = incoming.search;
-    const retryRequest = request.clone();
     const hasIdempotencyKey = Boolean(request.headers.get("idempotency-key")?.trim());
     // Match the Backend's only currently replay-safe mutation contract.
     // An arbitrary Idempotency-Key must never make another mutation replayable.
@@ -454,30 +524,60 @@ export default {
     const replaySafe =
       (["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.headers.get("upgrade")) ||
       idempotentPostCreate;
+    // Clone only requests whose explicit replay contract permits retry. In
+    // particular, never create a second body stream for login credentials.
+    const retryRequest = replaySafe ? request.clone() : null;
     let upstreamResponse;
+    let originTransportFailed = false;
     try {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
-      if ([502, 503, 504].includes(upstreamResponse.status)) {
-        try { await upstreamResponse.body?.cancel(); } catch {}
-        const wake = await wakeMachine(env);
-      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
-      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
-        upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
-        if ([502, 503, 504].includes(upstreamResponse.status)) {
-          try { await upstreamResponse.body?.cancel(); } catch {}
-          return recoveryUnavailable("machine_waking_or_unavailable", null, request);
-        }
-      }
     } catch {
-      const wake = await wakeMachine(env);
-      if (!wake.ready) return recoveryUnavailable("machine_wake_failed", wake.retryAfter, request);
-      if (!replaySafe) return recoveryUnavailable("machine_awake_retry_required", null, request);
+      // A transport exception is ambiguous: the origin may have processed a
+      // mutation before the connection failed. Recovery may wake the provider,
+      // but only the explicit replay-safe contract permits replay.
+      originTransportFailed = true;
+    }
+
+    const originGatewayFailure =
+      !originTransportFailed &&
+      [502, 503, 504].includes(upstreamResponse.status) &&
+      upstreamResponse.headers.get("x-testagram-service") !== "testagram-api";
+
+    if (originTransportFailed || originGatewayFailure) {
+      if (upstreamResponse) {
+        try { await upstreamResponse.body?.cancel(); } catch {}
+      }
+      const provider = await wakeMachine(env);
+      if (!provider.ready) {
+        return recoveryUnavailable("machine_wake_failed", provider.retryAfter, request);
+      }
+
+      // Provider runtime readiness is not application readiness. Wait for the
+      // separately authenticated Backend capability, which checks PostgreSQL.
+      const application = await waitForApplicationReadiness(env, provider.retryAfter);
+      if (!application.ready) {
+        return recoveryUnavailable("application_not_ready", application.retryAfter, request);
+      }
+
+      if (!replaySafe) {
+        if (request.method === "POST" && incoming.pathname === "/api/auth/login") {
+          return loginRetryReady(request);
+        }
+        return recoveryUnavailable("machine_awake_retry_required", null, request);
+      }
+
       try {
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
       } catch {
+        // Do not re-enter the lifecycle recovery branch: one request may start
+        // or follow only one provider operation.
         return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }
-      if ([502, 503, 504].includes(upstreamResponse.status)) {
+
+      const retryIsGatewayFailure =
+        [502, 503, 504].includes(upstreamResponse.status) &&
+        upstreamResponse.headers.get("x-testagram-service") !== "testagram-api";
+      if (retryIsGatewayFailure) {
         try { await upstreamResponse.body?.cancel(); } catch {}
         return recoveryUnavailable("machine_waking_or_unavailable", null, request);
       }

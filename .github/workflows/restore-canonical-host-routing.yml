@@ -496,6 +496,37 @@ jobs:
           echo "versions=$versions" >> "$GITHUB_OUTPUT"
           echo "Captured the active Cloudflare deployment version split for rollback."
 
+      - name: Store the InstaBox and application-readiness credentials as Worker secrets
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+          EDGE_RECOVERY_READINESS_TOKEN: ${{ secrets.TESTAGRAM_EDGE_RECOVERY_READINESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
+          [[ "$EDGE_RECOVERY_READINESS_TOKEN" =~ ^[A-Fa-f0-9]{64}$ ]] || { echo "::error::TESTAGRAM_EDGE_RECOVERY_READINESS_TOKEN must be 32 random bytes encoded as 64 hexadecimal characters and shared with the Backend deployment."; exit 1; }
+          printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
+          printf '%s' "$EDGE_RECOVERY_READINESS_TOKEN" | npx --yes wrangler@4 secret put EDGE_RECOVERY_READINESS_TOKEN --config cloudflare/wrangler.toml
+
+      - name: Verify the shared application-readiness capability before hostname cutover
+        shell: bash
+        env:
+          API_ORIGIN: ${{ steps.validate_origins.outputs.api_origin }}
+          EDGE_RECOVERY_READINESS_TOKEN: ${{ secrets.TESTAGRAM_EDGE_RECOVERY_READINESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          response="$(curl --connect-timeout 5 --max-time 8 -fsS \
+            -H "Authorization: Bearer $EDGE_RECOVERY_READINESS_TOKEN" \
+            -H "Cache-Control: no-store" \
+            "$API_ORIGIN/internal/edge/recovery-ready")"
+          jq -e '.ok == true and .ready == true and .service == "testagram-api"' <<<"$response" >/dev/null || {
+            echo "::error::The selected InstaBox Backend did not confirm authenticated PostgreSQL/application readiness; refusing hostname cutover."
+            exit 1
+          }
+          echo "Verified the exact selected API origin, shared readiness secret, native-auth configuration and PostgreSQL readiness."
+
       - name: Release the existing R2 custom-domain binding for Go CDN ownership
         id: detach_r2_domain
         if: steps.preflight.outputs.r2_bucket != ''
@@ -596,17 +627,6 @@ jobs:
             exit 1
           }
           echo "Verified only the exact api.testagram.site DNS records were released; Wrangler will create the canonical Worker Custom Domain and its DNS/TLS binding."
-
-      - name: Store the InstaBox recovery credential as a Cloudflare Worker secret
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
-        run: |
-          set -euo pipefail
-          test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
-          printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
 
       - name: Detach only the verified apex and www hostnames from Flutter Pages
         if: steps.preflight.outputs.pages_attached == 'true' || steps.preflight.outputs.www_pages_attached == 'true'
