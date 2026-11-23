@@ -597,16 +597,19 @@ jobs:
           }
           echo "Verified only the exact api.testagram.site DNS records were released; Wrangler will create the canonical Worker Custom Domain and its DNS/TLS binding."
 
-      - name: Store the InstaBox recovery credential as a Cloudflare Worker secret
+      - name: Store the InstaBox and application-readiness credentials as Worker secrets
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+          EDGE_RECOVERY_READINESS_TOKEN: ${{ secrets.TESTAGRAM_EDGE_RECOVERY_READINESS_TOKEN }}
         run: |
           set -euo pipefail
           test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
+          [[ ${#EDGE_RECOVERY_READINESS_TOKEN} -ge 64 ]] || { echo "::error::TESTAGRAM_EDGE_RECOVERY_READINESS_TOKEN must contain at least 64 characters and be shared with the Backend deployment."; exit 1; }
           printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
+          printf '%s' "$EDGE_RECOVERY_READINESS_TOKEN" | npx --yes wrangler@4 secret put EDGE_RECOVERY_READINESS_TOKEN --config cloudflare/wrangler.toml
 
       - name: Detach only the verified apex and www hostnames from Flutter Pages
         if: steps.preflight.outputs.pages_attached == 'true' || steps.preflight.outputs.www_pages_attached == 'true'
