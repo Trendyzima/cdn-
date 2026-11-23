@@ -1158,3 +1158,71 @@ test("canonical production cutover verifies real public federation contracts aft
   assert.ok(workflow.includes('"$API_ORIGIN/internal/edge/recovery-ready"'));
   assert.ok(deployIndex < removeIndex && removeIndex < verifyIndex);
 });
+
+
+test("recovers an ambiguous lost wake response by following the provider's existing operation on the next inbound retry", async (t) => {
+  restoreFetch(t);
+  let acceptedOperations = 0;
+  let wakeCalls = 0;
+  let originCalls = 0;
+  let operationReads = 0;
+  let readinessCalls = 0;
+  const wakeKeys = [];
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    const method = typeof request === "string" ? (init.method || "GET") : request.method;
+    const headers = typeof request === "string" ? new Headers(init.headers) : request.headers;
+
+    if (url === apiOrigin + "/api/social/feed") {
+      originCalls += 1;
+      if (originCalls <= 2) return new Response("origin is still waking", { status: 503 });
+      return new Response("feed restored", { status: 200 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake" && method === "POST") {
+      wakeCalls += 1;
+      wakeKeys.push(headers.get("idempotency-key"));
+      if (wakeCalls === 1) {
+        acceptedOperations += 1;
+        // The provider accepted the lifecycle operation, but its response
+        // was lost. A later inbound request must discover, not duplicate it.
+        throw new Error("simulated response loss after provider acceptance");
+      }
+      return Response.json({
+        error: { code: "operation_conflict", operationId: "accepted-wake-op" },
+      }, { status: 409 });
+    }
+    if (url === "https://api.instabox.sh/v1/operations/accepted-wake-op") {
+      operationReads += 1;
+      return Response.json({
+        id: "accepted-wake-op",
+        type: "resume",
+        state: "succeeded",
+        machine: {
+          id: "m_test123",
+          state: "running",
+          desiredState: "running",
+          runtime: { ready: true },
+        },
+      });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      readinessCalls += 1;
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    throw new Error("unexpected fetch: " + method + " " + url);
+  };
+
+  const workerEnv = env({ MACHINE_ID: "m_test123", INSTABOX_API_KEY: "ci-test-key" });
+  const first = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(first.status, 503);
+
+  const second = await worker.fetch(new Request("https://api.testagram.site/api/social/feed"), workerEnv);
+  assert.equal(second.status, 200);
+  assert.equal(await second.text(), "feed restored");
+  assert.equal(acceptedOperations, 1, "the simulated provider accepted exactly one lifecycle operation");
+  assert.equal(wakeCalls, 2, "the retry discovers the existing operation through the provider conflict response");
+  assert.notEqual(wakeKeys[0], wakeKeys[1], "each inbound request currently has a fresh provider idempotency key");
+  assert.equal(operationReads, 1, "the retry follows the original provider operation");
+  assert.equal(readinessCalls, 1, "the origin retry waits for application readiness");
+  assert.equal(originCalls, 3);
+});
