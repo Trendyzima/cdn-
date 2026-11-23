@@ -396,7 +396,7 @@ async function waitForApplicationReadiness(env, retryAfter = null) {
 }
 
 function loginRetryReady(request) {
-  const response = json({ ok: false, error: "machine_awake_retry_required" }, 503);
+  const response = json({ ok: false, error: "application_ready_retry_required" }, 503);
   const headers = new Headers(response.headers);
   headers.set("retry-after", "1");
   headers.set("x-testagram-recovery", "ready");
@@ -508,18 +508,9 @@ export default {
       (["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.headers.get("upgrade")) ||
       idempotentPostCreate;
     let upstreamResponse;
-    let loginRetryEligible = false;
     try {
       upstreamResponse = await fetch(makeUpstreamRequest(request, target, incoming));
       if ([502, 503, 504].includes(upstreamResponse.status)) {
-        // Only a gateway timeout/bad-gateway response without a Backend
-        // request ID proves the credential-bearing login did not receive an
-        // application response. A Backend 503 is never automatically replayed.
-        loginRetryEligible =
-          request.method === "POST" &&
-          incoming.pathname === "/api/auth/login" &&
-          [502, 504].includes(upstreamResponse.status) &&
-          !upstreamResponse.headers.has("x-request-id");
         try { await upstreamResponse.body?.cancel(); } catch {}
         const provider = await wakeMachine(env);
         if (!provider.ready) {
@@ -530,7 +521,7 @@ export default {
           return recoveryUnavailable("application_not_ready", application.retryAfter, request);
         }
         if (!replaySafe) {
-          if (loginRetryEligible) return loginRetryReady(request);
+          if (request.method === "POST" && incoming.pathname === "/api/auth/login") return loginRetryReady(request);
           return recoveryUnavailable("machine_awake_retry_required", null, request);
         }
         upstreamResponse = await fetch(makeUpstreamRequest(retryRequest, target, incoming));
