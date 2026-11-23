@@ -506,7 +506,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$INSTABOX_API_KEY" || { echo "::error::INSTABOX_API_KEY is required for incoming-traffic recovery."; exit 1; }
-          [[ ${#EDGE_RECOVERY_READINESS_TOKEN} -ge 64 ]] || { echo "::error::TESTAGRAM_EDGE_RECOVERY_READINESS_TOKEN must contain at least 64 characters and be shared with the Backend deployment."; exit 1; }
+          [[ "$EDGE_RECOVERY_READINESS_TOKEN" =~ ^[A-Fa-f0-9]{64}$ ]] || { echo "::error::TESTAGRAM_EDGE_RECOVERY_READINESS_TOKEN must be 32 random bytes encoded as 64 hexadecimal characters and shared with the Backend deployment."; exit 1; }
           printf '%s' "$INSTABOX_API_KEY" | npx --yes wrangler@4 secret put INSTABOX_API_KEY --config cloudflare/wrangler.toml
           printf '%s' "$EDGE_RECOVERY_READINESS_TOKEN" | npx --yes wrangler@4 secret put EDGE_RECOVERY_READINESS_TOKEN --config cloudflare/wrangler.toml
 
