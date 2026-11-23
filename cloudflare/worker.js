@@ -363,7 +363,7 @@ async function waitForApplicationReadiness(env, retryAfter = null) {
   const token = typeof env.EDGE_RECOVERY_READINESS_TOKEN === "string"
     ? env.EDGE_RECOVERY_READINESS_TOKEN
     : "";
-  if (!rawOrigin || token.length < 64) return { ready: false, retryAfter };
+  if (!rawOrigin || !/^[A-Fa-f0-9]{64}$/.test(token)) return { ready: false, retryAfter };
 
   let readinessUrl;
   try {
