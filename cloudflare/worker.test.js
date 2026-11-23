@@ -1313,6 +1313,13 @@ test("recovers a lost stopped-machine start response by following the operation 
   assert.equal(originCalls, 3);
 });
 
+test("Wrangler binds the durable recovery coordinator and declares its SQLite migration", () => {
+  const config = readFileSync(new URL("./wrangler.toml", import.meta.url), "utf8");
+  assert.match(config, /name = "RECOVERY_COORDINATOR"/);
+  assert.match(config, /class_name = "RecoveryCoordinator"/);
+  assert.match(config, /new_sqlite_classes = \["RecoveryCoordinator"\]/);
+});
+
 test("Durable Object retains lifecycle keys across retries and rotates them only after completion", async () => {
   const values = new Map();
   const storage = {
