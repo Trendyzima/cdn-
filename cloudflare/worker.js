@@ -350,6 +350,7 @@ async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) 
     return waitForLifecycleOperation(machine.operationId, machineUrl, auth, machineId, retryAfter);
   }
 
+  const startKey = await lifecycleIdempotencyKey(env, machineId, "start");
   const start = await fetch(machineUrl + "/start", {
     method: "POST",
     headers: {
