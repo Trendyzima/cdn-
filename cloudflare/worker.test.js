@@ -433,6 +433,83 @@ test("uses the documented InstaBox idle-wake endpoint and replays an idempotent 
   assert.equal(originalBody, payload);
 });
 
+test("polls the exact provider machine after wake acceptance until runtime readiness", async (t) => {
+  restoreFetch(t);
+  let machineReads = 0;
+  let originCalls = 0;
+  globalThis.fetch = async (request, init = {}) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      return Response.json({ machine: {
+        id: "m_test123", state: "starting", desiredState: "running",
+        runtime: { ready: false },
+      } }, { status: 202 });
+    }
+    if (url === "https://api.instabox.sh/v1/machines/m_test123" && (init.method || "GET") === "GET") {
+      machineReads += 1;
+      return Response.json({ machine: machineReads === 1
+        ? { id: "m_test123", state: "starting", desiredState: "running", runtime: { ready: false } }
+        : { id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } } });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    if (url === apiOrigin + "/healthz") {
+      originCalls += 1;
+      return originCalls === 1
+        ? new Response("origin unavailable", { status: 503 })
+        : new Response("api ready", { status: 200 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "api ready");
+  assert.equal(machineReads, 2);
+  assert.equal(originCalls, 2);
+});
+
+test("follows an asynchronous operation returned by the provider wake endpoint", async (t) => {
+  restoreFetch(t);
+  let operationReads = 0;
+  let originCalls = 0;
+  globalThis.fetch = async (request) => {
+    const url = typeof request === "string" ? request : request.url;
+    if (url === "https://api.instabox.sh/v1/machines/m_test123/wake") {
+      return Response.json({ operation: { id: "wake-op-456", type: "resume", state: "queued" } }, { status: 202 });
+    }
+    if (url === "https://api.instabox.sh/v1/operations/wake-op-456") {
+      operationReads += 1;
+      return Response.json({ operation: operationReads === 1
+        ? { id: "wake-op-456", type: "resume", state: "running" }
+        : { id: "wake-op-456", type: "resume", state: "succeeded",
+            machine: { id: "m_test123", state: "running", desiredState: "running", runtime: { ready: true } } } });
+    }
+    if (url === apiOrigin + "/internal/edge/recovery-ready") {
+      return Response.json({ ok: true, ready: true, service: "testagram-api" });
+    }
+    if (url === apiOrigin + "/healthz") {
+      originCalls += 1;
+      return originCalls === 1
+        ? new Response("origin unavailable", { status: 503 })
+        : new Response("api ready", { status: 200 });
+    }
+    throw new Error("unexpected fetch: " + url);
+  };
+
+  const response = await worker.fetch(new Request("https://api.testagram.site/healthz"), env({
+    MACHINE_ID: "m_test123",
+    INSTABOX_API_KEY: "ci-test-key",
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(operationReads, 2);
+  assert.equal(originCalls, 2);
+});
+
 test("independently verifies machine identity when the wake response omits its ID", async (t) => {
   restoreFetch(t);
   let originCalls = 0;
