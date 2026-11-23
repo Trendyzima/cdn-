@@ -457,7 +457,7 @@ async function wakeMachine(env) {
       );
     }
     if (wake.status === 409 && failure?.error?.code === "machine_not_running") {
-      return wakeStoppedMachine(env, machineUrl, auth, machineId, wakeRetryAfter);
+      return await wakeStoppedMachine(env, machineUrl, auth, machineId, wakeRetryAfter);
     }
     return { ready: false, retryAfter: wakeRetryAfter };
   } catch {
