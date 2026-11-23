@@ -511,7 +511,6 @@ export default {
     const target = new URL(origin.toString());
     target.pathname = incoming.pathname;
     target.search = incoming.search;
-    const retryRequest = request.clone();
     const hasIdempotencyKey = Boolean(request.headers.get("idempotency-key")?.trim());
     // Match the Backend's only currently replay-safe mutation contract.
     // An arbitrary Idempotency-Key must never make another mutation replayable.
@@ -522,6 +521,9 @@ export default {
     const replaySafe =
       (["GET", "HEAD", "OPTIONS"].includes(request.method) && !request.headers.get("upgrade")) ||
       idempotentPostCreate;
+    // Clone only requests whose explicit replay contract permits retry. In
+    // particular, never create a second body stream for login credentials.
+    const retryRequest = replaySafe ? request.clone() : null;
     let upstreamResponse;
     let originTransportFailed = false;
     try {
