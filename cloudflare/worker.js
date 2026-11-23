@@ -302,6 +302,33 @@ async function waitForLifecycleOperation(operationId, machineUrl, auth, machineI
   return { ready: false, retryAfter };
 }
 
+async function lifecycleIdempotencyKey(env, machineId, action) {
+  const namespace = env.RECOVERY_COORDINATOR;
+  if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
+    throw new Error("recovery_coordinator_unavailable");
+  }
+  const stub = namespace.get(namespace.idFromName(machineId));
+  const response = await stub.fetch("https://recovery-coordinator/key", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  if (!response.ok) throw new Error("recovery_coordinator_key_failed");
+  const body = await response.json();
+  if (typeof body?.key !== "string" || !body.key) throw new Error("recovery_coordinator_invalid_key");
+  return body.key;
+}
+
+async function completeLifecycleRecovery(env, machineId) {
+  const namespace = env.RECOVERY_COORDINATOR;
+  if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
+    throw new Error("recovery_coordinator_unavailable");
+  }
+  const stub = namespace.get(namespace.idFromName(machineId));
+  const response = await stub.fetch("https://recovery-coordinator/complete", { method: "POST" });
+  if (!response.ok) throw new Error("recovery_coordinator_complete_failed");
+}
+
 async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) {
   const snapshotResponse = await fetch(machineUrl, { headers: auth });
   if (!snapshotResponse.ok) {
@@ -328,7 +355,7 @@ async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) 
     headers: {
       ...auth,
       "Content-Type": "application/json",
-      "Idempotency-Key": `testagram-start-${crypto.randomUUID()}`,
+      "Idempotency-Key": startKey,
     },
     body: "{}",
   });
@@ -428,12 +455,13 @@ async function wakeMachine(env) {
     // coalesces concurrent callers. It deliberately does not override a
     // manual stop. Unexpectedly stopped machines use the guarded /start path
     // below only when desiredState still says running.
+    const wakeKey = await lifecycleIdempotencyKey(env, machineId, "wake");
     const wake = await fetch(machineUrl + "/wake", {
       method: "POST",
       headers: {
         ...auth,
         "Content-Type": "application/json",
-        "Idempotency-Key": `testagram-wake-${crypto.randomUUID()}`,
+        "Idempotency-Key": wakeKey,
       },
       body: "{}",
     });
@@ -559,6 +587,12 @@ export default {
         return recoveryUnavailable("application_not_ready", application.retryAfter, request);
       }
 
+      try {
+        await completeLifecycleRecovery(env, String(env.MACHINE_ID || "").trim());
+      } catch {
+        return recoveryUnavailable("recovery_coordination_unavailable", null, request);
+      }
+
       if (!replaySafe) {
         if (request.method === "POST" && incoming.pathname === "/api/auth/login") {
           return loginRetryReady(request);
@@ -607,3 +641,39 @@ export default {
     return exposeRecoveryHeaders(upstreamResponse, request);
   },
 };
+
+
+// One Durable Object per exact provider machine serializes recovery epochs and
+// persists lifecycle idempotency keys across independent Worker invocations.
+// Keys are retired only after provider runtime and private application readiness
+// have both been independently confirmed.
+export class RecoveryCoordinator {
+  constructor(ctx) {
+    this.ctx = ctx;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/key") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false }, 400); }
+      const action = body?.action;
+      if (action !== "wake" && action !== "start") return json({ ok: false }, 400);
+      const key = await this.ctx.storage.transaction(async (txn) => {
+        let state = await txn.get("recovery-epoch");
+        if (!state) state = { epoch: crypto.randomUUID(), keys: {} };
+        if (!state.keys[action]) {
+          state.keys[action] = `testagram-${action}-${state.epoch}-${crypto.randomUUID()}`;
+          await txn.put("recovery-epoch", state);
+        }
+        return state.keys[action];
+      });
+      return json({ ok: true, key });
+    }
+    if (request.method === "POST" && url.pathname === "/complete") {
+      await this.ctx.storage.delete("recovery-epoch");
+      return json({ ok: true });
+    }
+    return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store" } });
+  }
+}
