@@ -1,14 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker from "./worker.js";
+import worker, { RecoveryCoordinator } from "./worker.js";
 
 const apiOrigin = "https://machine-api.instabox.sh";
 const cdnOrigin = "https://machine-cdn.instabox.sh";
 const apexOrigin = "https://machine-apex.instabox.sh";
 
 function env(overrides = {}) {
-  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, EDGE_RECOVERY_READINESS_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", ...overrides };
+  const state = new Map();
+  const stub = { async fetch(url, init = {}) {
+    const path = new URL(url).pathname;
+    if (path === "/key" && init.method === "POST") {
+      const { action } = JSON.parse(init.body);
+      if (!state.has(action)) state.set(action, "testagram-" + action + "-test-epoch");
+      return Response.json({ ok: true, key: state.get(action) });
+    }
+    if (path === "/complete" && init.method === "POST") { state.clear(); return Response.json({ ok: true }); }
+    return new Response("Not Found", { status: 404 });
+  } };
+  const RECOVERY_COORDINATOR = { idFromName: (name) => name, get: () => stub };
+  return { API_ORIGIN: apiOrigin, CDN_ORIGIN: cdnOrigin, APEX_ORIGIN: apexOrigin, EDGE_RECOVERY_READINESS_TOKEN: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", RECOVERY_COORDINATOR, ...overrides };
 }
 
 function restoreFetch(t) {
@@ -1221,7 +1233,7 @@ test("recovers an ambiguous lost wake response by following the provider's exist
   assert.equal(await second.text(), "feed restored");
   assert.equal(acceptedOperations, 1, "the simulated provider accepted exactly one lifecycle operation");
   assert.equal(wakeCalls, 2, "the retry discovers the existing operation through the provider conflict response");
-  assert.notEqual(wakeKeys[0], wakeKeys[1], "each inbound request currently has a fresh provider idempotency key");
+  assert.equal(wakeKeys[0], wakeKeys[1], "each inbound request currently has a fresh provider idempotency key");
   assert.equal(operationReads, 1, "the retry follows the original provider operation");
   assert.equal(readinessCalls, 1, "the origin retry waits for application readiness");
   assert.equal(originCalls, 3);
@@ -1233,6 +1245,7 @@ test("recovers a lost stopped-machine start response by following the operation 
   let wakeCalls = 0;
   let machineReads = 0;
   let startCalls = 0;
+  const startKeys = [];
   let operationReads = 0;
   let originCalls = 0;
   let readinessCalls = 0;
@@ -1260,6 +1273,7 @@ test("recovers a lost stopped-machine start response by following the operation 
     }
     if (url === "https://api.instabox.sh/v1/machines/m_test123/start" && method === "POST") {
       startCalls += 1;
+      startKeys.push(new Headers(init.headers).get("idempotency-key"));
       throw new Error("simulated lost start response after provider accepted operation");
     }
     if (url === "https://api.instabox.sh/v1/operations/accepted-start-op") {
@@ -1293,7 +1307,26 @@ test("recovers a lost stopped-machine start response by following the operation 
   assert.equal(wakeCalls, 2);
   assert.equal(machineReads, 2);
   assert.equal(startCalls, 1, "the retry must follow the provider's active operation rather than POST /start again");
+  assert.equal(startKeys.length, 1);
   assert.equal(operationReads, 1);
   assert.equal(readinessCalls, 1);
   assert.equal(originCalls, 3);
+});
+
+test("Durable Object retains lifecycle keys across retries and rotates them only after completion", async () => {
+  const values = new Map();
+  const storage = {
+    async transaction(callback) { return callback({ get: async (key) => values.get(key), put: async (key, value) => values.set(key, structuredClone(value)) }); },
+    async delete(key) { values.delete(key); },
+  };
+  const coordinator = new RecoveryCoordinator({ storage });
+  const keyRequest = (action) => new Request("https://recovery-coordinator/key", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) });
+  const first = await (await coordinator.fetch(keyRequest("wake"))).json();
+  const retry = await (await coordinator.fetch(keyRequest("wake"))).json();
+  const start = await (await coordinator.fetch(keyRequest("start"))).json();
+  assert.equal(first.key, retry.key);
+  assert.notEqual(first.key, start.key);
+  await coordinator.fetch(new Request("https://recovery-coordinator/complete", { method: "POST" }));
+  const nextEpoch = await (await coordinator.fetch(keyRequest("wake"))).json();
+  assert.notEqual(first.key, nextEpoch.key);
 });
