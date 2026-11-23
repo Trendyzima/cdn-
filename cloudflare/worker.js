@@ -302,6 +302,7 @@ async function waitForLifecycleOperation(operationId, machineUrl, auth, machineI
   return { ready: false, retryAfter };
 }
 
+// The Durable Object supplies the same key to every retry in one recovery epoch.
 async function lifecycleIdempotencyKey(env, machineId, action) {
   const namespace = env.RECOVERY_COORDINATOR;
   if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
