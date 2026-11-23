@@ -302,8 +302,23 @@ async function waitForLifecycleOperation(operationId, machineUrl, auth, machineI
   return { ready: false, retryAfter };
 }
 
-// The Durable Object supplies the same key to every retry in one recovery epoch.
-async function lifecycleIdempotencyKey(env, machineId, action) {
+// Each inbound recovery attempt holds a durable lease. Successful completion
+// marks the epoch ready, but keys are not rotated while another request still
+// holds a lease. Expired leases are pruned after five minutes.
+async function acquireLifecycleRecovery(env, machineId) {
+  const namespace = env.RECOVERY_COORDINATOR;
+  if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
+    throw new Error("recovery_coordinator_unavailable");
+  }
+  const stub = namespace.get(namespace.idFromName(machineId));
+  const response = await stub.fetch("https://recovery-coordinator/acquire", { method: "POST" });
+  if (!response.ok) throw new Error("recovery_coordinator_acquire_failed");
+  const body = await response.json();
+  if (typeof body?.leaseId !== "string" || !body.leaseId) throw new Error("recovery_coordinator_invalid_lease");
+  return body.leaseId;
+}
+
+async function lifecycleIdempotencyKey(env, machineId, action, leaseId) {
   const namespace = env.RECOVERY_COORDINATOR;
   if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
     throw new Error("recovery_coordinator_unavailable");
@@ -312,7 +327,7 @@ async function lifecycleIdempotencyKey(env, machineId, action) {
   const response = await stub.fetch("https://recovery-coordinator/key", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify({ action, leaseId }),
   });
   if (!response.ok) throw new Error("recovery_coordinator_key_failed");
   const body = await response.json();
@@ -320,17 +335,21 @@ async function lifecycleIdempotencyKey(env, machineId, action) {
   return body.key;
 }
 
-async function completeLifecycleRecovery(env, machineId) {
+async function completeLifecycleRecovery(env, machineId, leaseId, completed) {
   const namespace = env.RECOVERY_COORDINATOR;
   if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
     throw new Error("recovery_coordinator_unavailable");
   }
   const stub = namespace.get(namespace.idFromName(machineId));
-  const response = await stub.fetch("https://recovery-coordinator/complete", { method: "POST" });
-  if (!response.ok) throw new Error("recovery_coordinator_complete_failed");
+  const response = await stub.fetch("https://recovery-coordinator/release", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ leaseId, completed: completed === true }),
+  });
+  if (!response.ok) throw new Error("recovery_coordinator_release_failed");
 }
 
-async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) {
+async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter, leaseId) {
   const snapshotResponse = await fetch(machineUrl, { headers: auth });
   if (!snapshotResponse.ok) {
     return { ready: false, retryAfter: retryAfterSeconds(snapshotResponse.headers) ?? retryAfter };
@@ -351,7 +370,7 @@ async function wakeStoppedMachine(env, machineUrl, auth, machineId, retryAfter) 
     return waitForLifecycleOperation(machine.operationId, machineUrl, auth, machineId, retryAfter);
   }
 
-  const startKey = await lifecycleIdempotencyKey(env, machineId, "start");
+  const startKey = await lifecycleIdempotencyKey(env, machineId, "start", leaseId);
   const start = await fetch(machineUrl + "/start", {
     method: "POST",
     headers: {
@@ -451,20 +470,16 @@ async function wakeMachine(env) {
   const api = "https://api.instabox.sh";
   const auth = { "X-API-Key": apiKey };
   const machineUrl = api + "/v1/machines/" + encodeURIComponent(machineId);
+  let leaseId = null;
 
   try {
-    // The dedicated wake endpoint handles an idle-suspended machine and
-    // coalesces concurrent callers. It deliberately does not override a
-    // manual stop. Unexpectedly stopped machines use the guarded /start path
-    // below only when desiredState still says running.
-    const wakeKey = await lifecycleIdempotencyKey(env, machineId, "wake");
+    leaseId = await acquireLifecycleRecovery(env, machineId);
+    // The dedicated wake endpoint handles idle suspension without overriding
+    // a manual stop. Unexpected stopped state uses the guarded /start path.
+    const wakeKey = await lifecycleIdempotencyKey(env, machineId, "wake", leaseId);
     const wake = await fetch(machineUrl + "/wake", {
       method: "POST",
-      headers: {
-        ...auth,
-        "Content-Type": "application/json",
-        "Idempotency-Key": wakeKey,
-      },
+      headers: { ...auth, "Content-Type": "application/json", "Idempotency-Key": wakeKey },
       body: "{}",
     });
     if (wake.ok) {
@@ -473,24 +488,26 @@ async function wakeMachine(env) {
       if (typeof operation?.id === "string" &&
           ["start", "resume"].includes(operation?.type) &&
           ["queued", "running", "succeeded"].includes(operation?.state)) {
-        return waitForLifecycleOperation(operation.id, machineUrl, auth, machineId, null);
+        return { ...(await waitForLifecycleOperation(operation.id, machineUrl, auth, machineId, null)), leaseId };
       }
       const machine = providerObject(payload, "machine");
-      return verifyReadyMachine(machine, machineUrl, auth, machineId, null);
+      return { ...(await verifyReadyMachine(machine, machineUrl, auth, machineId, null)), leaseId };
     }
 
     const wakeRetryAfter = retryAfterSeconds(wake.headers);
     const failure = await providerJson(wake).catch(() => ({}));
     if (wake.status === 409 && failure?.error?.code === "operation_conflict") {
-      return waitForLifecycleOperation(
-        failure.error.operationId, machineUrl, auth, machineId, wakeRetryAfter,
-      );
+      return {
+        ...(await waitForLifecycleOperation(failure.error.operationId, machineUrl, auth, machineId, wakeRetryAfter)),
+        leaseId,
+      };
     }
     if (wake.status === 409 && failure?.error?.code === "machine_not_running") {
-      return await wakeStoppedMachine(env, machineUrl, auth, machineId, wakeRetryAfter);
+      return { ...(await wakeStoppedMachine(env, machineUrl, auth, machineId, wakeRetryAfter, leaseId)), leaseId };
     }
-    return { ready: false, retryAfter: wakeRetryAfter };
+    return { ready: false, retryAfter: wakeRetryAfter, leaseId };
   } catch {
+    if (leaseId) await completeLifecycleRecovery(env, machineId, leaseId, false).catch(() => {});
     return { ready: false, retryAfter: null };
   }
 }
@@ -579,6 +596,9 @@ export default {
       }
       const provider = await wakeMachine(env);
       if (!provider.ready) {
+        if (provider.leaseId) {
+          await completeLifecycleRecovery(env, String(env.MACHINE_ID || "").trim(), provider.leaseId, false).catch(() => {});
+        }
         return recoveryUnavailable("machine_wake_failed", provider.retryAfter, request);
       }
 
@@ -586,11 +606,14 @@ export default {
       // separately authenticated Backend capability, which checks PostgreSQL.
       const application = await waitForApplicationReadiness(env, provider.retryAfter);
       if (!application.ready) {
+        if (provider.leaseId) {
+          await completeLifecycleRecovery(env, String(env.MACHINE_ID || "").trim(), provider.leaseId, false).catch(() => {});
+        }
         return recoveryUnavailable("application_not_ready", application.retryAfter, request);
       }
 
       try {
-        await completeLifecycleRecovery(env, String(env.MACHINE_ID || "").trim());
+        await completeLifecycleRecovery(env, String(env.MACHINE_ID || "").trim(), provider.leaseId, true);
       } catch {
         return recoveryUnavailable("recovery_coordination_unavailable", null, request);
       }
@@ -656,26 +679,65 @@ export class RecoveryCoordinator {
 
   async fetch(request) {
     const url = new URL(request.url);
+    const now = Date.now();
+    const leaseTtlMs = 5 * 60 * 1000;
+
+    if (request.method === "POST" && url.pathname === "/acquire") {
+      const leaseId = crypto.randomUUID();
+      const epoch = await this.ctx.storage.transaction(async (txn) => {
+        let state = await txn.get("recovery-epoch");
+        if (!state) state = { epoch: crypto.randomUUID(), keys: {}, leases: {}, completed: false };
+        state.leases ||= {};
+        for (const [id, expiry] of Object.entries(state.leases)) {
+          if (!Number.isFinite(expiry) || expiry <= now) delete state.leases[id];
+        }
+        if (state.completed && Object.keys(state.leases).length === 0) {
+          state = { epoch: crypto.randomUUID(), keys: {}, leases: {}, completed: false };
+        }
+        state.leases[leaseId] = now + leaseTtlMs;
+        await txn.put("recovery-epoch", state);
+        return state.epoch;
+      });
+      return json({ ok: true, leaseId, epoch });
+    }
+
     if (request.method === "POST" && url.pathname === "/key") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: false }, 400); }
       const action = body?.action;
-      if (action !== "wake" && action !== "start") return json({ ok: false }, 400);
+      if ((action !== "wake" && action !== "start") || typeof body?.leaseId !== "string") {
+        return json({ ok: false }, 400);
+      }
       const key = await this.ctx.storage.transaction(async (txn) => {
-        let state = await txn.get("recovery-epoch");
-        if (!state) state = { epoch: crypto.randomUUID(), keys: {} };
+        const state = await txn.get("recovery-epoch");
+        if (!state?.leases?.[body.leaseId]) return null;
+        state.leases[body.leaseId] = now + leaseTtlMs;
         if (!state.keys[action]) {
           state.keys[action] = `testagram-${action}-${state.epoch}-${crypto.randomUUID()}`;
-          await txn.put("recovery-epoch", state);
         }
+        await txn.put("recovery-epoch", state);
         return state.keys[action];
       });
+      if (!key) return json({ ok: false }, 409);
       return json({ ok: true, key });
     }
-    if (request.method === "POST" && url.pathname === "/complete") {
-      await this.ctx.storage.delete("recovery-epoch");
+
+    if (request.method === "POST" && url.pathname === "/release") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: false }, 400); }
+      if (typeof body?.leaseId !== "string") return json({ ok: false }, 400);
+      const released = await this.ctx.storage.transaction(async (txn) => {
+        const state = await txn.get("recovery-epoch");
+        if (!state?.leases?.[body.leaseId]) return false;
+        delete state.leases[body.leaseId];
+        if (body.completed === true) state.completed = true;
+        await txn.put("recovery-epoch", state);
+        return true;
+      });
+      if (!released) return json({ ok: false }, 409);
       return json({ ok: true });
     }
+
     return new Response("Not Found", { status: 404, headers: { "cache-control": "no-store" } });
   }
 }
