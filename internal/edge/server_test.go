@@ -556,3 +556,37 @@ func TestPrivateMediaConditionalRequestsAreForwarded(t *testing.T) {
 		t.Fatalf("private conditional response cache policy=%q", rr.Header().Get("Cache-Control"))
 	}
 }
+
+func TestPrivateMediaRejectsAmbiguousViewerAuthorizationHeaders(t *testing.T) {
+	hit := false
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Header().Set("X-Testagram-Visibility", "private")
+		_, _ = w.Write([]byte("private"))
+	}))
+	defer origin.Close()
+	cfg := testConfig(t)
+	cfg.OriginURLs = []string{origin.URL}
+	cfg.OriginAuthToken = "origin-secret"
+	s := New(cfg)
+	cases := [][]string{
+		{"Bearer one", "Bearer one"},
+		{"Bearer invalid", "Bearer valid"},
+		{" Bearer valid"},
+		{"Bearer valid "},
+	}
+	for _, values := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/v1/users/u1/private.webp", nil)
+		for _, value := range values {
+			req.Header.Add("Authorization", value)
+		}
+		rr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("values %#v status=%d, want 400", values, rr.Code)
+		}
+	}
+	if hit {
+		t.Fatal("ambiguous viewer authorization reached private origin")
+	}
+}

@@ -144,8 +144,13 @@ func(s *Server)asset(w http.ResponseWriter,r *http.Request){
   http.Error(w,"playback tokens are not supported; send viewer Authorization",http.StatusBadRequest)
   return
  }
- viewerAuthorization:=strings.TrimSpace(r.Header.Get("Authorization"))
- if len(viewerAuthorization)>8192 || strings.ContainsAny(viewerAuthorization,"\r\n") { http.Error(w,"invalid viewer authorization header",http.StatusBadRequest); return }
+ authorizationValues:=r.Header.Values("Authorization")
+ if len(authorizationValues)>1 { http.Error(w,"ambiguous viewer authorization header",http.StatusBadRequest); return }
+ viewerAuthorization:=""
+ if len(authorizationValues)==1 {
+  viewerAuthorization=authorizationValues[0]
+  if viewerAuthorization=="" || viewerAuthorization!=strings.TrimSpace(viewerAuthorization) || len(viewerAuthorization)>8192 || strings.ContainsAny(viewerAuthorization,"\r\n") { http.Error(w,"invalid viewer authorization header",http.StatusBadRequest); return }
+ }
  if viewerAuthorization!="" {
   if strings.TrimSpace(s.cfg.OriginAuthToken)=="" {
    http.Error(w,"trusted origin authentication is not configured",http.StatusServiceUnavailable)
